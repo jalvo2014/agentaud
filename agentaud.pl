@@ -18,9 +18,10 @@
 # $DB::single=2;   # remember debug breakpoint
 
 ## Todos
+#  Handle Agent side historical traces - needs definition and work.
 
-$gVersion = 0.70000;
-
+$gVersion = 0.75000;
+$gWin = (-e "C:/") ? 1 : 0;       # determine Windows versus Linux/Unix for detail settings
 
 # CPAN packages used
 use Data::Dumper;               # debug
@@ -91,15 +92,16 @@ use Data::Dumper;               # debug
 my $opt_z;
 my $opt_logpat;
 my $opt_logpath;
-my $opt_workpath;
 my $full_logfn;
 my $opt_v;
-my $workdel = "";
-my $opt_inplace = 1;
-my $opt_work    = 0;
 my $opt_cmdall;                                  # show all commands
 
 sub gettime;                             # get time
+sub init_txt;                            # input from txt file
+sub init_lst;                            # input from lst file
+
+%sitnamex = ();
+
 
 # following hashtable is a backup for calculating table lengths.
 # Windows, Linux, Unix tables only at the moment
@@ -306,14 +308,8 @@ my $audit_start_time = gettime();       # formated current time for report
 $hdri++;$hdr[$hdri] = "Start: $audit_start_time";
 
 #  following are the nominal values. These are used to generate an advisories section
-#  that can guide usage of the Workload report. These can be overridden by the temsaud.ini file.
+#  that can guide usage of the Workload report. These can be overridden by the agentaud.ini file.
 
-my $opt_nominal_results   = 500000;          # result bytes per minute
-my $opt_nominal_trace     = 1000000;         # trace bytes per minute
-my $opt_nominal_workload  = 50;              # When results high, what sits to show
-#my $opt_nominal_maxresult = 128000;          # Maximum result size
-my $opt_nominal_remotesql = 1200;            # Startup seconds, remote SQL failures during this time may be serious
-my $opt_max_results       = 16*1024*1024 - 8192; # When max results this high, possible truncated results
 my $opt_nohdr;                               # when 1 no headers printed
 my $opt_objid;                               # when 1 print object id
 my $opt_o;                                   # when defined filename of report file
@@ -327,9 +323,6 @@ while (@ARGV) {
    }
    if ($ARGV[0] eq "-z") {
       $opt_z = 1;
-      shift(@ARGV);
-   } elsif ($ARGV[0] eq "-b") {
-      $opt_b = 1;
       shift(@ARGV);
    } elsif ($ARGV[0] eq "-cmdall") {
       $opt_cmdall = 1;
@@ -347,12 +340,6 @@ while (@ARGV) {
             $opt_o = shift(@ARGV);
          }
       }
-   } elsif ($ARGV[0] eq "-inplace") {
-#     $opt_inplace = 1;                # ignore as unused
-      shift(@ARGV);
-   } elsif ($ARGV[0] eq "-work") {
-      $opt_inplace = 0;
-      shift(@ARGV);
    } elsif ($ARGV[0] eq "-v") {
       $opt_v = 1;
       shift(@ARGV);
@@ -360,15 +347,9 @@ while (@ARGV) {
       shift(@ARGV);
       $opt_logpath = shift(@ARGV);
       die "logpath specified but no path found\n" if !defined $opt_logpath;
-   } elsif ($ARGV[0] eq "-workpath") {
-      shift(@ARGV);
-      $opt_workpath = shift(@ARGV);
-      $opt_inplace = 0;
-      die "workpath specified but no path found\n" if !defined $opt_workpath;
-   }
-   else {
+   } else {
       $logfn = shift(@ARGV);
-      die "log file not defined\n" if !defined $logfn;
+      die "log file name not defined\n" if !defined $logfn;
    }
 }
 
@@ -378,32 +359,11 @@ die "logpath and -z must not be supplied together\n" if defined $opt_z and defin
 if (!defined $opt_logpath) {$opt_logpath = "";}
 if (!defined $logfn) {$logfn = "";}
 if (!defined $opt_z) {$opt_z = 0;}
-if (!defined $opt_b) {$opt_b = 0;}
 if (!defined $opt_cmdall) {$opt_cmdall = 0;}
 if (!defined $opt_nohdr) {$opt_nohdr = 0;}
 if (!defined $opt_objid) {$opt_objid = 0;}
 if (!defined $opt_o) {$opt_o = "agentaud.csv";}
 if (!defined $opt_v) {$opt_v = 0;}
-
-$gWin = (-e "C:/") ? 1 : 0;       # determine Windows versus Linux/Unix for detail settings
-
-if (!$opt_inplace) {
-   if (!defined $opt_workpath) {
-      if ($gWin == 1) {
-         $opt_workpath = $ENV{TEMP};
-         $opt_workpath = "c:\temp" if !defined $opt_workpath;
-      } else {
-         $opt_workpath = $ENV{TMP};
-         $opt_workpath = "/tmp" if !defined $opt_workpath;
-      }
-   }
-   $opt_workpath =~ s/\\/\//g;    # switch to forward slashes, less confusing when programming both environments
-   $opt_workpath .= '/';
-}
-
-my $pwd;
-
-# logic below is to normalize the supplied logpath. For example  ../../logs  needs to be resulted to a proper path name.
 
 if ($gWin == 1) {
    $pwd = `cd`;
@@ -434,34 +394,6 @@ die "logpath or logfn must be supplied\n" if !defined $logfn and !defined $opt_l
 
 # Establish nominal values for the Advice Summary section
 
-my $opt_ini = "temsaud.ini";
-
-if (-e $opt_ini) {
-   open( FILE, "< $opt_ini" ) or die "Cannot open ini file $opt_ini : $!";
-   my @ips = <FILE>;
-   close FILE;
-
-   # typical ini file scraping.
-   my $l = 0;
-   foreach my $oneline (@ips)
-   {
-      $l++;
-      chomp($oneline);
-      next if (substr($oneline,0,1) eq "#");  # skip comment line
-      my @words = split(" ",$oneline);
-      next if $#words == -1;                  # skip blank line
-
-      # two word controls - option and value
-      if ($words[0] eq "results") {$opt_nominal_results = $words[1];}
-      elsif ($words[0] eq "trace") {$opt_nominal_trace = $words[1];}
-      elsif ($words[0] eq "workload") {$opt_nominal_workload = $words[1];}
-      elsif ($words[0] eq "remotesql") {$opt_nominal_remotesql = $words[1];}
-      else {
-         die "unknown control in temsaud.ini line $l unknown control $words[0]"
-      }
-   }
-}
-
 my $pattern;
 my @results = ();
 my $loginv;
@@ -474,7 +406,7 @@ my $segi = -1;
 my $segp = -1;
 my $segcur = "";
 my $segline;
-my $segmax = "";
+my $segmax = 0;
 my $skipzero = 0;
 my $key;
 
@@ -521,6 +453,15 @@ sub open_kib;
 sub read_kib;
 
 my $pos;
+
+my $opt_txt_tsitdesc = 'QA1CSITF.DB.TXT';
+my $opt_lst_tsitdesc = 'QA1CSITF.DB.LST';
+
+if (-e $opt_txt_tsitdesc) {
+   $rc = init_txt();
+} elsif (-e $opt_lst_tsitdesc) {
+   $rc = init_lst();
+}
 
 
 open_kib();
@@ -573,7 +514,6 @@ my $mx;                     # index
 
 
 
-my $pti = -1;               # count of process table records
 my @pt  = ();               # pt keys - table_path
 my %ptx = ();               # associative array from from pt key to index
 my @pt_table = ();          # pt table
@@ -619,21 +559,6 @@ my $contkey;
 # following are in the $runx value, which is actually an array
 my $runref;                                  # reference to array
 my $run_thread;                              # needed for cross references
-
-my $sqli = -1;                               # number of SQLs spotted
-my @sql = ();                                # Array of SQLs
-my %sqlx = ();                               # SQL to index has
-my @sql_ct = ();                             # count of SQLs
-
-my $sql_start = 0;
-my $sql_end = 0;
-
-my $sqltabi = -1;                            # number of SQL tables spotted
-my @sqltab = ();                             # Array of SQL tables
-my @sqltab_ct = ();                          # count of SQL table usages
-my $sql_state = 0;                           # state of SQL capture
-my $sql_cap = "";                            # collection of SQL fragments
-
 
 my $inrowsize;
 my $inobject;
@@ -947,6 +872,7 @@ for(;;)
          }
       }
    }
+   next if $skipzero;
 
    #  Tracing notes
    #  error
@@ -962,7 +888,6 @@ for(;;)
 
    #   (5421D2F0.0550-D:kraafmgr.cpp,816,"Start") Start complete IBM_test_boa <1355809413,1339032522> on *.KLZPROC, status = 0
    #   (5429E381.00C3-1:kraafmgr.cpp,816,"Start") Start complete  <1823474271,2838496211> on *.KLZPROC, status = 0
-   next if $skipzero;
    if (substr($logunit,0,12) eq "kraafmgr.cpp") {
       if ($logentry eq "Start") {
          $oneline =~ /^\((\S+)\)(.+)$/;
@@ -1433,6 +1358,7 @@ my @sittab_instance  = ();
 my @sittab_sendrows  = ();
 my @sittab_colct  = ();
 my @sittab_colrows  = ();
+my @sittab_colbytes  = ();
 my @sittab_colfilt  = ();
 my @sittab_coltime  = ();
 my @sittab_objid = ();
@@ -1440,6 +1366,11 @@ my @sittab_rowsize = ();
 my @sittab_delayeval = ();
 my @sittab_delaysample = ();
 my @sittab_delaysend = ();
+
+my $sittab_total_coltime = 0;
+my $sittab_total_colrows = 0;
+my $sittab_total_colsize = 0;
+my $sittab_total_colbytes = 0;
 
 for (my $i=0; $i<=$histruni; $i++) {
    $sitref = $histrun[$i];
@@ -1457,6 +1388,7 @@ for (my $i=0; $i<=$histruni; $i++) {
       $sittab_sendrows[$kx] = 0;
       $sittab_colct[$kx] = 0;
       $sittab_colrows[$kx] = 0;
+      $sittab_colbytes[$kx] = 0;
       $sittab_colfilt[$kx] = 0;
       $sittab_coltime[$kx] = 0;
       $sittab_rowsize[$kx] = 0;
@@ -1496,6 +1428,7 @@ foreach my $f (keys %sitrun) {
       $sittab_sendrows[$kx] = 0;
       $sittab_colct[$kx] = 0;
       $sittab_colrows[$kx] = 0;
+      $sittab_colbytes[$kx] = 0;
       $sittab_colfilt[$kx] = 0;
       $sittab_coltime[$kx] = 0;
       $sittab_rowsize[$kx] = 0;
@@ -1549,12 +1482,72 @@ for (my $i=0;$i<=$sittabi;$i++) {
    my $looksize = $htabsize{$sittab_tab[$i]};
    next if !defined $looksize;
    $sittab_rowsize[$i] = $looksize;
+   $sittab_colbytes[$i] = $sittab_colrows[$i]*$sittab_rowsize[$i];
 }
 
-$cnt++;$oline[$cnt]="Agent Workload Audit Report by Situation and Table\n";
+# calculate totals
+
+my $sitnamect = keys %sitnamex;
+for (my $i=0;$i<=$sittabi;$i++) {
+   $sittab_total_coltime += $sittab_coltime[$i];
+   $sittab_total_colrows += $sittab_colrows[$i];
+   $sittab_total_colbytes += $sittab_colbytes[$i];
+   my $onesit = $sittab_sit[$i];
+   next if $onesit eq "HEARTBEAT";
+   next if substr($onesit,0,3) eq "_Z_";
+   if ($sitnamect > 0) {
+      if (!defined $sitnamex{$onesit}) {
+         $advisori++;$advisor[$advisori] = "Advisory: Situation[$onesit] absent from situation list";
+      }
+   }
+}
+
+my $sittab_cum_coltime = 0;
+my $respc;
+my $ppc;
+
+$cnt++;$oline[$cnt]="Agent Workload Audit Report by Situation and Table sorted by Collection Time\n";
 $cnt++;$oline[$cnt]="\n";
-$cnt++;$oline[$cnt]="Situation,Table,Time_Taken,Instance,Collections,Sendrows,Collect_Rows,Collect_Filter,Row_Size,Delay_Eval,DelaySample,Delay_Send\n";
+$cnt++;$oline[$cnt]="Situation,Table,Time_Taken,TT%,TT%cum,Instance,Collections,Sendrows,Collect_Rows,Collect_Filter,Collect_Bytes,Row_Size,Delay_Eval,DelaySample,Delay_Send\n";
 foreach my $f ( sort { $sittab_coltime[$sittabx{$b}] <=> $sittab_coltime[$sittabx{$a}] } keys %sittabx ) {
+   my $i = $sittabx{$f};
+   next if $sittab_sit[$i] eq "dummysit";
+   $outl = $sittab_sit[$i] . ",";
+   $outl .= $sittab_tab[$i] . ",";
+   $outl .= $sittab_coltime[$i] . ",";
+   $sittab_cum_coltime += $sittab_coltime[$i];
+   $res_pc = int(($sittab_coltime[$i]*100)/$sittab_total_coltime);
+   $ppc = sprintf '%.0f%%', $res_pc;
+   $outl .= $ppc . ",";
+   $res_pc = int(($sittab_cum_coltime*100)/$sittab_total_coltime);
+   $ppc = sprintf '%.0f%%', $res_pc;
+   $outl .= $ppc . ",";
+   $outl .= $sittab_instance[$i] . ",";
+   $outl .= $sittab_colct[$i] . ",";
+   $outl .= $sittab_sendrows[$i] . ",";
+   $outl .= $sittab_colrows[$i] . ",";
+   $outl .= $sittab_colfilt[$i] . ",";
+   $outl .= $sittab_colbytes[$i] . ",";
+   $outl .= $sittab_rowsize[$i] . ",";
+   $outl .= $sittab_delayeval[$i] . ",";
+   $outl .= $sittab_delaysample[$i] . ",";
+   $outl .= $sittab_delaysend[$i] . ",";
+   $outl .= $sittab_objid[$i] . "," if $opt_objid == 1;
+   $cnt++;$oline[$cnt]="$outl\n";
+}
+if ($sittab_total_coltime >= $sit_duration) {
+   $advisori++;$advisor[$advisori] = "Advisory: Capture duration[$sit_duration] less then collection time[$sittab_total_coltime]";
+}
+$outl = "Duration," . $sit_duration . "," . $sittab_total_coltime . ",,,,,,,," . $sittab_total_colbytes . ",,,";
+$cnt++;$oline[$cnt]="$outl\n";
+
+my $sittab_cum_colbytes = 0;
+
+$cnt++;$oline[$cnt]="\n";
+$cnt++;$oline[$cnt]="Agent Workload Audit Report by Situation and Table Sorted by Collected Bytes\n";
+$cnt++;$oline[$cnt]="\n";
+$cnt++;$oline[$cnt]="Situation,Table,Time_Taken,Instance,Collections,Sendrows,Collect_Rows,Collect_Filter,Collect_Bytes,CB%,CB%cum,Row_Size,Delay_Eval,DelaySample,Delay_Send\n";
+foreach my $f ( sort { $sittab_colbytes[$sittabx{$b}] <=> $sittab_colbytes[$sittabx{$a}] } keys %sittabx ) {
    my $i = $sittabx{$f};
    next if $sittab_sit[$i] eq "dummysit";
    $outl = $sittab_sit[$i] . ",";
@@ -1565,6 +1558,14 @@ foreach my $f ( sort { $sittab_coltime[$sittabx{$b}] <=> $sittab_coltime[$sittab
    $outl .= $sittab_sendrows[$i] . ",";
    $outl .= $sittab_colrows[$i] . ",";
    $outl .= $sittab_colfilt[$i] . ",";
+   $outl .= $sittab_colbytes[$i] . ",";
+   $sittab_cum_colbytes += $sittab_colbytes[$i];
+   $res_pc = int(($sittab_colbytes[$i]*100)/$sittab_total_colbytes);
+   $ppc = sprintf '%.0f%%', $res_pc;
+   $outl .= $ppc . ",";
+   $res_pc = int(($sittab_cum_colbytes*100)/$sittab_total_colbytes);
+   $ppc = sprintf '%.0f%%', $res_pc;
+   $outl .= $ppc . ",";
    $outl .= $sittab_rowsize[$i] . ",";
    $outl .= $sittab_delayeval[$i] . ",";
    $outl .= $sittab_delaysample[$i] . ",";
@@ -1572,7 +1573,7 @@ foreach my $f ( sort { $sittab_coltime[$sittabx{$b}] <=> $sittab_coltime[$sittab
    $outl .= $sittab_objid[$i] . "," if $opt_objid == 1;
    $cnt++;$oline[$cnt]="$outl\n";
 }
-$outl = "Duration," . $sit_duration . ",";
+$outl = "Duration," . $sit_duration . "," . $sittab_total_coltime . ",,,,,," . $sittab_total_colbytes . ",,,";
 $cnt++;$oline[$cnt]="$outl\n";
 
 #print "\n";
@@ -1656,7 +1657,6 @@ if ($acti != -1) {
 
 open OH, ">$opt_o" or die "can't open $opt_o: $!";
 
-#$DB::single=2;
 if ($opt_nohdr == 0) {
    for (my $i=0;$i<=$hdri;$i++) {
       $outl = $hdr[$i] . "\n";
@@ -1664,6 +1664,14 @@ if ($opt_nohdr == 0) {
    }
    print OH "\n";
 }
+if ($advisori == -1) {
+   print OH "No Expert Advisory messages\n";
+} else {
+   for (my $i=0;$i<=$advisori;$i++){
+      print OH "$advisor[$i]\n";
+   }
+}
+print OH "\n";
 
 for (my $i=0;$i<=$cnt;$i++) {
    print OH $oline[$i];
@@ -1692,34 +1700,6 @@ my $res_pc = 0;
 my $trc_pc = 0;
 my $res_max = 0;
 
-$cnt++;$oline[$cnt]="Summary Statistics\n";
-$cnt++;$oline[$cnt]="Duration (seconds),,,$dur\n";
-$cnt++;$oline[$cnt]="Total Count,,,$sitct_tot\n";
-$cnt++;$oline[$cnt]="Total Rows,,,$sitrows_tot\n";
-$cnt++;$oline[$cnt]="Total Result (bytes),,,$sitres_tot\n";
-my $trespermin = int($sitres_tot / ($dur / 60));
-$cnt++;$oline[$cnt]="Total Results per minute,,,$trespermin\n";
-if ($trespermin > $opt_nominal_results) {
-   $res_pc = int((($trespermin - $opt_nominal_results)*100)/$opt_nominal_results);
-   my $ppc = sprintf '%.0f%%', $res_pc;
-   $advisori++;$advisor[$advisori] = "Advisory: Results bytes per minute $ppc higher then nominal [$opt_nominal_results]\n";
-   $res_max = 1;
-}
-
-$cnt++;$oline[$cnt]="\n";
-$cnt++;$oline[$cnt]="Trace duration (seconds),,,$tdur\n";
-my $trace_lines_minute = int($trace_ct / ($tdur / 60));
-$cnt++;$oline[$cnt]="Trace Lines Per Minute,,,$trace_lines_minute\n";
-my $trace_size_minute = int($trace_sz / ($tdur / 60));
-$cnt++;$oline[$cnt]="Trace Bytes Per Minute,,,$trace_size_minute\n";
-$cnt++;$oline[$cnt]="\n";
-if ($trace_size_minute > $opt_nominal_trace) {
-   $trc_pc = int((($trace_size_minute - $opt_nominal_trace)*100)/$opt_nominal_trace);
-   my $ppc = sprintf '%.0f%%', $trc_pc;
-   $advisori++;$advisor[$advisori] = "Advisory: Trace bytes per minute $ppc higher then nominal $opt_nominal_trace\n";
-}
-
-
 my $f;
 my $crespermin = 0;
 my $lag_fraction = 0;
@@ -1742,18 +1722,10 @@ foreach $f ( sort { $sitres[$sitx{$b}] <=> $sitres[$sitx{$a}] } keys %sitx ) {
    $outl .= $pfraction . "%,";
    $crespermin += $respermin;
    $fraction = ($crespermin*100) / $trespermin;
-   if ($res_max == 1) {
-      if ($lag_fraction < $opt_nominal_workload) {
-         $advisori++;$advisor[$advisori] = "Advisory: $sit[$i] high rate $respermin [$pfraction%]\n";
-      }
-   }
    $pfraction = sprintf "%.2f", $fraction;
    $outl .= $pfraction . "%,";
    $outl .= $sitrmin[$i] . ",";
    $outl .= $sitrmax[$i] . ",";
-   if ($sitrmax[$i] >= $opt_max_results){
-         $advisori++;$advisor[$advisori] = "Advisory: $sit[$i] possible truncated results - max result $sitrmax[$i]\n";
-   }
    $outl .= $sitrmaxnode[$i];
    $cnt++;$oline[$cnt]=$outl . "\n";
    $lag_fraction = $fraction;
@@ -1787,53 +1759,6 @@ $outl .= $sitres_tot . ",";
 $respermin = int($sitres_tot / ($dur / 60));
 $outl .= $respermin;
 $cnt++;$oline[$cnt]=$outl . "\n";
-
-my $sqlt_duration;
-
-if ($sqli != -1) {
-   $sql_duration = $sql_end - $sql_start;
-   $cnt++;$oline[$cnt]="\n";
-   $cnt++;$oline[$cnt]="SQL Summary Report\n";
-   $cnt++;$oline[$cnt]="Count,SQL\n";
-   foreach $f ( sort { $sql_ct[$sqlx{$b}] <=> $sql_ct[$sqlx{$a}] } keys %sqlx ) {
-      $i = $sqlx{$f};
-      $outl = $sql_ct[$i] . ",";
-      $outl .= "=\"" . $sql[$i] . "\",";
-      $cnt++;$oline[$cnt]=$outl . "\n";
-      $sql_ct_total += $sql_ct[$i];
-   }
-   $outl = "duration" . " " . $sql_duration . ",";
-   $outl .= $sql_ct_total . ",";
-   $cnt++;$oline[$cnt]=$outl . "\n";
-}
-
-if ($pti != -1) {
-   $pt_dur = $pt_etime - $pt_stime;
-   $cnt++;$oline[$cnt]="\n";
-   $cnt++;$oline[$cnt]="Process Table Report\n";
-   $cnt++;$oline[$cnt]="Process Table Duration: $pt_dur seconds\n";
-   $cnt++;$oline[$cnt]="Table,Path,Insert,Query,Select,SelectPreFiltered,Delete,Total,Total/min,Error,Error/min,Errors\n";
-   foreach $f ( sort { $pt_total_ct[$ptx{$b}] <=> $pt_total_ct[$ptx{$a}] } keys %ptx) {
-      $i = $ptx{$f};
-      $outl = $pt_table[$i] . ",";
-      $outl .= $pt_path[$i] . ",";
-      $outl .= $pt_insert_ct[$i] . ",";
-      $outl .= $pt_query_ct[$i] . ",";
-      $outl .= $pt_select_ct[$i] . ",";
-      $outl .= $pt_selectpre_ct[$i] . ",";
-      $outl .= $pt_delete_ct[$i] . ",";
-      $outl .= $pt_total_ct[$i] . ",";
-      $respermin = int($pt_total_ct[$i] / ($pt_dur / 60));
-      $outl .= $respermin . ",";
-      $outl .= $pt_error_ct[$i] . ",";
-      $respermin = int($pt_error_ct[$i] / ($pt_dur / 60));
-      $outl .= $respermin . ",";
-      $outl .= $pt_errors[$i] . ",";
-      $cnt++;$oline[$cnt]=$outl . "\n";
-   }
-   $respermin = int($pt_total_total / ($pt_dur / 60));
-   $cnt++;$oline[$cnt]="*total*,,,,,,,$pt_total_total,$respermin,\n";
-}
 
 my $total_hist_rows = 0;
 my $total_hist_bytes = 0;
@@ -1940,27 +1865,58 @@ print STDERR "Wrote $cnt lines\n";
 
 exit 0;
 
+sub init_txt {
+   my @ksit_data;
+   my $isitname;
+   my $ipdt;
+
+   # (5) the TSITDESC data
+   open(KSIT, "< $opt_txt_tsitdesc") || die("Could not open sit $opt_txt_tsitdesc\n");
+   @ksit_data = <KSIT>;
+   close(KSIT);
+
+   $ll = 0;
+   foreach $oneline (@ksit_data) {
+      $ll += 1;
+      next if $ll < 5;
+      chop $oneline;
+      $isitname = substr($oneline,0,32);
+      $isitname =~ s/\s+$//;   #trim trailing whitespace
+      $ipdt = substr($oneline,33);
+      $ipdt =~ s/\s+$//;   #trim trailing whitespace
+      $sitnamex{$isitname} = $ipdt;
+   }
+   close KSIT;
+
+}
+
+sub init_lst {
+   my @ksit_data;                 # TSITDESC - Situation Description
+   my $isitname;
+   my $ipdt;
+
+   # (5) the TSITDESC data
+   # [1]  Deploy_Failed  *NO  ATOM=KDYDYST.TARGETMSN;SEV=Critical;TFWD=Y;OV=N;~  *NONE  NNN  0  000200  *IF *VALUE Deploy_status.Status *EQ Failed
+   open(KSIT, "< $opt_lst_tsitdesc") || die("Could not open sit $opt_lst_tsitdesc\n");
+   @ksit_data = <KSIT>;
+   close(KSIT);
+
+   $ll = 0;
+   foreach $oneline (@ksit_data) {
+      $ll += 1;
+      next if $ll < 2;
+      chop $oneline;
+      ($isitname,$ipdt) = parse_lst(2,$oneline);
+      $isitname =~ s/\s+$//;   #trim trailing whitespace
+      $ipdt =~ s/\s+$//;   #trim trailing whitespace
+   }
+   $sitnamex{$isitname} = $ipdt;
+}
+
 
 sub open_kib {
    # get list of files
    $logpat = $logbase . '-.*\.log' if defined $logbase;
-   if (!$opt_inplace) {
-      if (defined $logbase) {
-         my $cmd;
-         my $rc;
-         if ($gWin == 1) {
-            $cmd = "copy \"$opt_logpath$logbase-*.log\" \"$opt_workpath\">nul";
-            $cmd =~ s/\//\\/g;    # switch to backward slashes for Windows command
-            $rc = system($cmd);
-         } else {
-            $cmd = "cp $opt_logpath$logbase-*.log $opt_workpath.>/dev/null";
-            $rc = system($cmd);
-         }
-         $opt_logpath = $opt_workpath;
-         $workdel = $logbase . "-*.log";
-      }
-   }
-
 
    if (defined $logpat) {
       opendir(DIR,$opt_logpath) || die("cannot opendir $opt_logpath: $!\n");
@@ -1977,7 +1933,7 @@ sub open_kib {
 
       foreach $f (@dlogfiles) {
          $f =~ /^.*-(\d+)\.log/;
-         $segmax = $1 if $segmax eq "";
+         $segmax = $1 if $segmax == 0;
          $segmax = $1 if $segmax < $1;
          $dlog = $opt_logpath . $f;
          open($dh, "< $dlog") || die("Could not open log $dlog\n");
@@ -1998,7 +1954,7 @@ sub open_kib {
          $todo{$dlog} = hex($itime);               # Add to array of logs
          close($dh);
       }
-      $segmax -= 1;
+     #$segmax -= 1;
 
       foreach $f ( sort { $todo{$a} <=> $todo{$b} } keys %todo ) {
          $segi += 1;
@@ -2017,7 +1973,7 @@ sub read_kib {
       $segp = 0;
       if ($segmax > 0) {
          my $seg_diff_time = $seg_time[1] - $seg_time[0];
-         if ($seg_diff_time > 3600) {
+         if ($seg_diff_time > 600) {
             $skipzero = 1;
          }
       }
@@ -2031,7 +1987,6 @@ sub read_kib {
    $inline = <KIB>;
    return if defined $inline;
    close(KIB);
-   unlink $segcurr if $workdel ne "";
    $segp += 1;
    $skipzero = 0;
    return if $segp > $segi;
@@ -2095,6 +2050,7 @@ exit;
 }
 #------------------------------------------------------------------------------
 # 0.50000 - new script based on temsaud.pl version 1.25000
-# 0.60000 - extend logic and remove temsaud specific logic
+# 0.60000 - extend logic and remove agentsaud specific logic
 # 0.70000 - clean up tests add -nohdr option for regression testing
 #         - add -objid option, add duration tests
+# 0.75000 - if available get situation list and validate running situations
