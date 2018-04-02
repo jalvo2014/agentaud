@@ -43,7 +43,7 @@
 # (54931625.04D0-3:kraadspt.cpp,889,"sendDataToProxy") Sending 14 rows for UNIX_LAA_Log_Size_Warning KUL.ULMONLOG, <722472833,294650830>.
 # (54931626.0DBD-11:kraadspt.cpp,955,"sendDataToProxy") Exit
 
-$gVersion = 0.80000;
+$gVersion = 0.81000;
 $gWin = (-e "C:/") ? 1 : 0;       # determine Windows versus Linux/Unix for detail settings
 
 # CPAN packages used
@@ -932,7 +932,6 @@ for(;;)
          next if substr($rest,1,19) ne "*EV-INFO: Exception";
          $rest =~ /^.*Situation (\S+) \S+ (\S+) Type<(\d)> Interval<(\d+)> rowSize<(\d+)> /;
          $isitname = $1;
-#$DB::single=2;
          $itable = $2;
          $isittype = $3;
          $irowsize = $5;
@@ -1043,6 +1042,7 @@ for(;;)
    #   (54220145.001F-1:kraafira.cpp,404,"~ctira") Deleting request @0x8094fe80 <1357906597,1339032502> KLZ.KLZPROC, IBM_test_boa_1
 #$DB::single=2 if $l >= 20904;
 
+
    if (substr($logunit,0,12) eq "kraafira.cpp") {
       if ($logentry eq "DriveDataCollection") {
          $oneline =~ /^\((\S+)\)(.+)$/;
@@ -1071,7 +1071,7 @@ for(;;)
             $sitref = $sitrun{$iobjid};
             if (!defined $sitref) {
                $sitseq += 1;                               # set new count
-               my %sitref =(                               # anonymous hash for situation instance capture
+               my %sit_ref = (                             # anonymous hash for situation instance capture
                            thread => $logthread,           # Thread id associated with command capture
                            sitname => $isitname,           # Name of Situation
                            objid => $iobjid,               # stamp - hex time
@@ -1098,7 +1098,8 @@ for(;;)
                            delayeval => 0,                 # total delay to next evaluation
 
                );
-               $sitrun{$iobjid} = \%sitref;
+               $sitrun{$iobjid} = \%sit_ref;
+               $sitref = \%sit_ref;
             }
             $sitref->{state} = 2;
             $sitref->{colcount} += 1;
@@ -1284,11 +1285,12 @@ for(;;)
    # (54931626.0DAE-11:kraaevxp.cpp,501,"CreateSituationEvent") *EV-INFO: Input event: obj=0x1111FA530, type=5, excep=0, numbRow=1, rowData=0x110ADF640, status=0, sitname="UNIX_LAA_Bad_su_to_root_Warning"
    if (substr($logunit,0,12) eq "kraaevxp.cpp") {
       if ($logentry eq "CreateSituationEvent") {
+         $oneline =~ /^\((\S+)\)(.+)$/;
+         $rest = $2;  #*EV-INFO: Input event: obj=0x1111FA530, type=5, excep=0, numbRow=1, rowData=0x110ADF640, status=0, sitname="UNIX_LAA_Bad_su_to_root_Warning"
+         next if substr($rest,1,22) ne "*EV-INFO: Input event:";
          my $cap_ref = $thrun{$logthread};
          if (defined $cap_ref) {
             if ($cap_ref->{type} == 4) {
-               $oneline =~ /^\((\S+)\)(.+)$/;
-               $rest = $2;  #*EV-INFO: Input event: obj=0x1111FA530, type=5, excep=0, numbRow=1, rowData=0x110ADF640, status=0, sitname="UNIX_LAA_Bad_su_to_root_Warning"
                $rest =~ /sitname="(\S+)"/;
                $isitname = $1;
                my $ht_ref = $hsitdata{$isitname};
@@ -1315,6 +1317,11 @@ for(;;)
             $iobjid = $3;
             $sitref = $sitrun{$iobjid};
             if (defined $sitref) {
+               if ($sitref->{sitname} eq "HEARTBEAT") {
+                  $sitref->{sendct} += 1;
+                  $sitref->{colrows} += 1;
+                  $sitref->{colfilt} += 1;
+               }
                if ($sitref->{state} == 3) {
                   $sitref->{state} = 4;
                   $sitref->{sendrows} += $srows;
@@ -1331,7 +1338,7 @@ for(;;)
          }  elsif (substr($rest,1,7) eq "Exit") {
             my $cap_ref = $thrun{$logthread};
             if (defined $cap_ref) {
-               if ($cap_ref->{type} == 4) {
+               if ($cap_ref->{type} == 4) {            # pure situation
                   $isitname = $cap_ref->{sitname};
                   my $pure_ref = $sitpure{$isitname};
                   if (!defined $pure_ref) {
@@ -1355,8 +1362,11 @@ for(;;)
                   } elsif ($logtime > $pure_end) {
                      $pure_end = $logtime;
                   }
+               } else {                                # sampled situation
+                  $iobjid = $cap_ref->{objid};
+                  $sitref = $sitrun{$iobjid};
+                  $sitref->{state} = 2 if defined $sitref;   # resume waiting for next expiry
                }
-               delete $thrun{$logthread};
             }
          }
       }
@@ -1562,7 +1572,7 @@ for (my $i=0; $i<=$histruni; $i++) {
 
 foreach my $f (keys %sitrun) {
    $sitref = $sitrun{$f};
-   next if $sitref->{state} != 2;
+#  next if $sitref->{state} != 2;
 #  $key = $sitref->{sitname} . "!" . $sitref->{table} . "!" . $sitref->{objid};
 
    $key = $sitref->{sitname} . "!" . $sitref->{table};
@@ -1627,7 +1637,10 @@ for (my $i=0;$i<=$sittabi;$i++) {
 # For any cases that are still missing, reference a built in table of rowsizes.
 
 for (my $i=0;$i<=$sittabi;$i++) {
-   next if $sittab_rowsize[$i] > 0;
+   if ( $sittab_rowsize[$i] > 0) {
+      $sittab_colbytes[$i] = $sittab_colrows[$i]*$sittab_rowsize[$i];
+      next;
+   }
    next if $sittab_tab[$i] eq "";
    my $looksize = $htabsize{$sittab_tab[$i]};
    next if !defined $looksize;
@@ -2249,3 +2262,4 @@ exit;
 # 0.76000 - Corrections for z/OS mode
 #           Improve collecting rowsize
 # 0.80000 - Report data on pure situations
+# 0.81000 - Handle ITM 622 level traces
