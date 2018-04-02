@@ -19,11 +19,12 @@
 
 ## Todos
 
-$gVersion = 0.60000;
+$gVersion = 0.70000;
 
 
 # CPAN packages used
-use Data::Dumper;               # debug only
+use Data::Dumper;               # debug
+#use warnings::unused; # debug used to check for unused variables
 
 # This is a typical log scraping program. The log data looks like this
 #
@@ -100,6 +101,178 @@ my $opt_cmdall;                                  # show all commands
 
 sub gettime;                             # get time
 
+# following hashtable is a backup for calculating table lengths.
+# Windows, Linux, Unix tables only at the moment
+
+my %htabsize = (
+   'OMUNX.UNIXAMS'     => '212',
+   'OMUNX.UNIXDUSERS'  => '1668',
+   'OMUNX.UNIXDEVIC'   => '560',
+   'OMUNX.UNIXLVOLUM'  => '1240',
+   'OMUNX.UNIXLPAR'    => '1556',
+   'OMUNX.AIXPAGMEM'   => '208',
+   'OMUNX.AIXMPIOATR'  => '560',
+   'OMUNX.AIXMPIOSTS'  => '560',
+   'OMUNX.AIXNETADPT'  => '1592',
+   'OMUNX.UNIXPVOLUM'  => '552',
+   'OMUNX.AIXSYSIO'    => '144',
+   'OMUNX.UNIXVOLGRP'  => '336',
+   'OMUNX.UNIXWPARCP'  => '432',
+   'OMUNX.UNIXWPARFS'  => '1616',
+   'OMUNX.UNIXWPARIN'  => '5504',
+   'OMUNX.UNIXWPARNE'  => '1360',
+   'OMUNX.UNIXWPARPM'  => '400',
+   'OMUNX.UNIXDCSTAT'  => '184',
+   'OMUNX.UNIXDISK'    => '1364',
+   'OMUNX.UNIXDPERF'   => '832',
+   'OMUNX.KUXPASSTAT'  => '1382',
+   'OMUNX.KUXPASMGMT'  => '510',
+   'OMUNX.KUXPASALRT'  => '484',
+   'OMUNX.KUXPASCAP'   => '3062',
+   'OMUNX.UNIXMACHIN'  => '508',
+   'OMUNX.UNIXNFS'     => '492',
+   'OMUNX.UNIXNET'     => '1600',
+   'OMUNX.UNIXPS'      => '2784',
+   'OMUNX.UNIXCPU'     => '360',
+   'OMUNX.UNIXSOLZON'  => '598',
+   'OMUNX.UNIXOS'      => '1084',
+   'OMUNX.UNIXTOPCPU'  => '1844',
+   'OMUNX.UNIXTOPMEM'  => '1864',
+   'OMUNX.UNIXALLUSR'  => '160',
+   'OMUNX.KUXDEVIC'    => '660',
+   'OMUNX.UNIXGROUP'   => '136',
+   'OMUNX.UNIXIPADDR'  => '546',
+   'OMUNX.UNIXMEM'     => '560',
+   'OMUNX.UNIXPING'    => '868',
+   'OMUNX.UNXPRINTQ'   => '288',
+   'OMUNX.UNIXTCP'     => '104',
+   'OMUNX.UNIXUSER'    => '540',
+   'KNT.ACTSRVPG'    => '376',
+   'KNT.DHCPSRV'     => '272',
+   'KNT.DNSDYNUPD'   => '264',
+   'KNT.DNSMEMORY'   => '240',
+   'KNT.DNSQUERY'    => '288',
+   'KNT.DNSWINS'     => '248',
+   'KNT.DNSZONET'    => '288',
+   'KNT.FTPSTATS'    => '280',
+   'KNT.FTPSVC'      => '216',
+   'KNT.GOPHRSVC'    => '292',
+   'KNT.HTTPCNDX'    => '248',
+   'KNT.HTTPSRVC'    => '328',
+   'KNT.ICMPSTAT'    => '324',
+   'KNT.IISSTATS'    => '272',
+   'KNT.INDEXSVC'    => '588',
+   'KNT.INDEXSVCF'   => '556',
+   'KNT.IPSTATS'     => '288',
+   'KNT.JOBOBJ'      => '644',
+   'KNT.JOBOBJD'     => '672',
+   'KNT.KNTPASSTAT'  => '1390',
+   'KNT.KNTPASMGMT'  => '526',
+   'KNT.KNTPASALRT'  => '484',
+   'KNT.KNTPASCAP'   => '2998',
+   'KNT.MSMQIS'      => '244',
+   'KNT.MSMQQUE'     => '424',
+   'KNT.MSMQSVC'     => '252',
+   'KNT.MSMQSESS'    => '312',
+   'KNT.NETWRKIN'    => '476',
+   'KNT.NETSEGMT'    => '180',
+   'KNT.NNTPCMD'     => '328',
+   'KNT.NNTPSRV'     => '312',
+   'KNT.NTBIOSINFO'  => '656',
+   'KNT.NTCACHE'     => '340',
+   'KNT.NTCOMPINFO'  => '1232',
+   'KNT.NTDEVDEP'    => '668',
+   'KNT.NTDEVICE'    => '1148',
+   'KNT.NTEVTLOG'    => '3132',
+   'KNT.NTIPADDR'    => '614',
+   'KNT.NTJOBOBJD'   => '692',
+   'KNT.WTLOGCLDSK'  => '684',
+   'KNT.WTMEMORY'    => '388',
+   'KNT.NTMEMORY'    => '348',
+   'KNT.NTLOGINFO'   => '1256',
+   'KNT.NTNETWRKIN'  => '992',
+   'KNT.NTNETWPORT'  => '772',
+   'KNT.WTOBJECTS'   => '240',
+   'KNT.NTPAGEFILE'  => '552',
+   'KNT.WTPHYSDSK'   => '320',
+   'KNT.NTPRTJOB'    => '1436',
+   'KNT.NTPRINTER'   => '2424',
+   'KNT.WTPROCESS'   => '1028',
+   'KNT.NTPROCESS'   => '960',
+   'KNT.NTPROCSSR'   => '192',
+   'KNT.NTPROCINFO'  => '452',
+   'KNT.NTPROCRSUM'  => '340',
+   'KNT.NTREDIRECT'  => '476',
+   'KNT.WTSERVER'    => '364',
+   'KNT.WTSERVERQ'   => '220',
+   'KNT.NTSERVERQ'   => '248',
+   'KNT.NTSVCDEP'    => '680',
+   'KNT.NTSERVICE'   => '1468',
+   'KNT.WTSYSTEM'    => '900',
+   'KNT.WTTHREAD'    => '328',
+   'KNT.PRINTQ'      => '576',
+   'KNT.PROCESSIO'   => '704',
+   'KNT.KNTRASPT'    => '220',
+   'KNT.KNTRASTOT'   => '288',
+   'KNT.SMTPSRV'     => '368',
+   'KNT.TCPSTATS'    => '252',
+   'KNT.UDPSTATS'    => '236',
+   'KNT.VMMEMORY'    => '128',
+   'KNT.VMPROCSSR'   => '196',
+   'KNT.WEBSVC'      => '392',
+   'KLZ.KLZPASSTAT'  => '1382',
+   'KLZ.KLZPASMGMT'  => '526',
+   'KLZ.KLZPASALRT'  => '484',
+   'KLZ.KLZPASCAP'   => '3062',
+   'KLZ.KLZCPU'      => '232',
+   'KLZ.KLZCPUAVG'   => '276',
+   'KLZ.KLZDISK'     => '692',
+   'KLZ.KLZDSKIO'    => '216',
+   'KLZ.KLZDU'       => '408',
+   'KLZ.KLZIOEXT'    => '412',
+   'KLZ.KLZLPAR'     => '344',
+   'KLZ.KLZNET'      => '365',
+   'KLZ.KLZNFS'      => '384',
+   'KLZ.KLZPROC'     => '1720',
+   'KLZ.KLZPUSR'     => '1580',
+   'KLZ.KLZRPC'      => '144',
+   'KLZ.KLZSOCKD'    => '296',
+   'KLZ.KLZSOCKS'    => '100',
+   'KLZ.KLZSWPRT'    => '128',
+   'KLZ.KLZSYS'      => '316',
+   'KLZ.KLZTCP'      => '88',
+   'KLZ.KLZLOGIN'    => '488',
+   'KLZ.KLZVM'       => '380',
+   'KLZ.LNXALLUSR'   => '152',
+   'KLZ.LNXCPU'      => '252',
+   'KLZ.LNXCPUAVG'   => '348',
+   'KLZ.LNXCPUCON'   => '312',
+   'KLZ.LNXDISK'     => '488',
+   'KLZ.LNXDSKIO'    => '248',
+   'KLZ.LNXDU'       => '204',
+   'KLZ.LNXGROUP'    => '144',
+   'KLZ.LNXPING'     => '228',
+   'KLZ.LNXIOEXT'    => '440',
+   'KLZ.LNXIPADDR'   => '546',
+   'KLZ.LNXMACHIN'   => '828',
+   'KLZ.LNXNET'      => '317',
+   'KLZ.LNXNFS'      => '324',
+   'KLZ.LNXOSCON'    => '440',
+   'KLZ.LNXPROC'     => '1324',
+   'KLZ.LNXPUSR'     => '1416',
+   'KLZ.LNXRPC'      => '152',
+   'KLZ.LNXSOCKD'    => '312',
+   'KLZ.LNXSOCKS'    => '132',
+   'KLZ.LNXSWPRT'    => '148',
+   'KLZ.LNXSYS'      => '312',
+   'KLZ.LNXLOGIN'    => '524',
+   'KLZ.LNXVM'       => '336',
+);
+
+
+my $sit_start = 0;                           # first expired time
+my $sit_end = 0;                             # last expired time
+my $sit_duration = 0;                        # total expired time
 
 
 my $isitname;                                # incoming situation name
@@ -128,7 +301,7 @@ my @histrun = ();                            # history of situation completions 
 my $hdri = -1;                               # some header lines for report
 my @hdr = ();                                #
 
-$hdri++;$hdr[$hdri] = "TEMS Audit report v$gVersion";
+$hdri++;$hdr[$hdri] = "TEMA Workload Advisory report v$gVersion";
 my $audit_start_time = gettime();       # formated current time for report
 $hdri++;$hdr[$hdri] = "Start: $audit_start_time";
 
@@ -141,6 +314,9 @@ my $opt_nominal_workload  = 50;              # When results high, what sits to s
 #my $opt_nominal_maxresult = 128000;          # Maximum result size
 my $opt_nominal_remotesql = 1200;            # Startup seconds, remote SQL failures during this time may be serious
 my $opt_max_results       = 16*1024*1024 - 8192; # When max results this high, possible truncated results
+my $opt_nohdr;                               # when 1 no headers printed
+my $opt_objid;                               # when 1 print object id
+my $opt_o;                                   # when defined filename of report file
 
 my $arg_start = join(" ",@ARGV);
 $hdri++;$hdr[$hdri] = "Runtime parameters: $arg_start";
@@ -158,6 +334,19 @@ while (@ARGV) {
    } elsif ($ARGV[0] eq "-cmdall") {
       $opt_cmdall = 1;
       shift(@ARGV);
+   } elsif ($ARGV[0] eq "-nohdr") {
+      $opt_nohdr = 1;
+      shift(@ARGV);
+   } elsif ($ARGV[0] eq "-objid") {
+      $opt_objid = 1;
+      shift(@ARGV);
+   } elsif ($ARGV[0] eq "-o") {
+      shift(@ARGV);
+      if (defined $ARGV[0]) {
+         if (substr($ARGV[0],0,1) ne "-") {
+            $opt_o = shift(@ARGV);
+         }
+      }
    } elsif ($ARGV[0] eq "-inplace") {
 #     $opt_inplace = 1;                # ignore as unused
       shift(@ARGV);
@@ -191,6 +380,9 @@ if (!defined $logfn) {$logfn = "";}
 if (!defined $opt_z) {$opt_z = 0;}
 if (!defined $opt_b) {$opt_b = 0;}
 if (!defined $opt_cmdall) {$opt_cmdall = 0;}
+if (!defined $opt_nohdr) {$opt_nohdr = 0;}
+if (!defined $opt_objid) {$opt_objid = 0;}
+if (!defined $opt_o) {$opt_o = "agentaud.csv";}
 if (!defined $opt_v) {$opt_v = 0;}
 
 $gWin = (-e "C:/") ? 1 : 0;       # determine Windows versus Linux/Unix for detail settings
@@ -210,7 +402,6 @@ if (!$opt_inplace) {
 }
 
 my $pwd;
-my $d_res;
 
 # logic below is to normalize the supplied logpath. For example  ../../logs  needs to be resulted to a proper path name.
 
@@ -347,7 +538,6 @@ my $logentry;               # function printed from - IRA_NCS_Sample
 my $irows;                  # number of rows
 my $isize;                  # size of rows
 my $itbl;                   # table name involved
-my $isit;                   # Situation name - may be null
 my $siti = -1;              # count of situations
 my @sit = ();               # situation name
 my %sitx = ();              # associative array from situation name to index
@@ -361,8 +551,6 @@ my @sitrmaxnode = ();       # situation node giving maximum of result size
 my $sitct_tot = 0;          # total results
 my $sitrows_tot = 0;        # total rows
 my $sitres_tot = 0;         # total size
-my $sitstime = 0;           # smallest time seen - distributed
-my $sitetime = 0;           # largest time seen  - distributed
 my $trcstime = 0;           # trace smallest time seen - distributed
 my $trcetime = 0;           # trace largest time seen  - distributed
 my $timestart = "";         # first time seen - z/OS
@@ -401,13 +589,6 @@ my @pt_errors   = ();       # string of different error status types
 my $pt_etime = 0;
 my $pt_stime = 0;
 my $pt_dur   = 0;
-my $ipt_status = "";
-my $ipt_rows = "";
-my $ipt_table = "";
-my $ipt_type = "";
-my $ipt_path  = "";
-my $ipt_key = "";
-my $ix;
 my $pt_total_total = 0;
 
 
@@ -449,7 +630,6 @@ my $sql_end = 0;
 
 my $sqltabi = -1;                            # number of SQL tables spotted
 my @sqltab = ();                             # Array of SQL tables
-my %sqltabx = ();                            # SQL table to index has
 my @sqltab_ct = ();                          # count of SQL table usages
 my $sql_state = 0;                           # state of SQL capture
 my $sql_cap = "";                            # collection of SQL fragments
@@ -458,7 +638,6 @@ my $sql_cap = "";                            # collection of SQL fragments
 my $inrowsize;
 my $inobject;
 my $intable;
-my $inappl;
 my $inrows;
 my $inreadct;
 my $inskipct;
@@ -557,7 +736,6 @@ for(;;)
       last;
    }
    $l++;
-#$DB::single=2 if $l >= 99999;
 #print STDERR "Working on $l\n";
 # following two lines are used to debug errors. First you flood the
 # output with the working on log lines, while merging stdout and stderr
@@ -869,6 +1047,8 @@ for(;;)
    #   (5421D2F0.10BD-F:kraafira.cpp,890,"DriveDataCollection") KLZ.KLZPROC, <1357906681,1339032506> IBM_test_boa_1 expired.
    #   (5429E381.00DB-8:kraafira.cpp,890,"DriveDataCollection") KLZ.KLZPROC, <1823474271,2838496211>  expired.   *note* no situation name
    #   (54220145.001F-1:kraafira.cpp,404,"~ctira") Deleting request @0x8094fe80 <1357906597,1339032502> KLZ.KLZPROC, IBM_test_boa_1
+#$DB::single=2 if $l >= 20904;
+
    if (substr($logunit,0,12) eq "kraafira.cpp") {
       if ($logentry eq "DriveDataCollection") {
          $oneline =~ /^\((\S+)\)(.+)$/;
@@ -883,6 +1063,16 @@ for(;;)
             } else {
                $isitname =~ /(\S+) /;
                $isitname = $1;
+            }
+            if ($sit_start == 0) {
+               $sit_start = $logtime;
+               $sit_end = $logtime;
+            }
+            if ($logtime < $sit_start) {
+               $sit_start = $logtime;
+            }
+            if ($logtime > $sit_end) {
+               $sit_end = $logtime;
             }
             $sitref = $sitrun{$iobjid};
             if (!defined $sitref) {
@@ -921,6 +1111,7 @@ for(;;)
             $sitref->{exptime} = $logtime;
             $sitref->{table} = $itable;
             $sitref->{time_expired} = $logtime;
+            $sitref->{time_sample} = 0;
             $thrun{$logthread} = $iobjid;
                                            # Exit: 0x0
          } elsif (substr($rest,1,5) eq "Exit:") {
@@ -1035,6 +1226,7 @@ for(;;)
                    if ($sitref->{state} == 2) {
                       $sitref->{colrows} += 1;
                       $sitref->{colfilt} += 1 if substr($rest,7,3) eq "0x0";
+                      $sitref->{time_sample} = $logtime if  $sitref->{time_sample} == 0;
                    }
                 }
              }
@@ -1068,15 +1260,6 @@ for(;;)
             $srows = $1;
 #            $isitname = $2;
 #            if (substr($isitname,0,1) eq " ") {
-#$DB::single=2 if $l >= 25324;
-#               $itable = substr($isitname,1);
-#               $isitname = "";
-#            } else {
-#$DB::single=2 if $l >= 25324;;
-#               $isitname =~ /(\S+) (\S+)/;
-#               $isitname = $1;
-#               $itable = $2;
-#           }
             $iobjid = $3;
             $sitref = $sitrun{$iobjid};
             if (defined $sitref) {
@@ -1114,6 +1297,9 @@ for(;;)
             $sitref->{delayeval} += $sitref->{time_expired} - $sitref->{time_next};
             $sitref->{delaysample} += $sitref->{time_sample} - $sitref->{time_expired} if $sitref->{time_sample} > 0; ;
             $sitref->{delaysend} += $sitref->{time_send} - $sitref->{time_expired} if $sitref->{time_send} > 0;
+#$DB::single=2 if $sitref->{delayeval} < 0;
+#$DB::single=2 if $sitref->{delaysample} < 0;
+#$DB::single=2 if $sitref->{delaysend} < 0;
             $sitref->{time_next} = $inext;
             $sitref->{time_expired} = 0;
             $sitref->{time_sample} = 0;
@@ -1139,7 +1325,6 @@ for(;;)
    # +53FE31BA.0045     00000080   6973206F 66203938  2027                is.of.98.'
    # (53FE31BD.0000-61C:kglhc1c.c,862,"KGLHC1_Command") Exit: 0x0
 
-#$DB::single=2 if $l >= 21952;
    if (substr($logunit,0,9) eq "kglhc1c.c") {
       $oneline =~ /^\((\S+)\)(.+)$/;
       $rest = $2;
@@ -1227,10 +1412,10 @@ for(;;)
 
 }
 
-$dur = $sitetime - $sitstime;
+$sit_duration = $sit_end - $sit_start;
 $tdur = $trcetime - $trcstime;
 
-if ($dur == 0)  {
+if ($sit_duration == 0)  {
    print STDERR "Results Duration calculation is zero, setting to 1000\n";
    $dur = 1000;
 }
@@ -1332,13 +1517,46 @@ foreach my $f (keys %sitrun) {
    $sittab_delaysend[$kx] += $sitref->{delaysend};
 }
 
-#$DB::single=2;
+# If no data was ever sent to the TEMS, the trace record will have no information
+# about row size. Row size is the number of bytes of data sent from the agent to
+# the TEMS and is an important clue for how much data is being processed.
+
+# First collect rowsize information when available.
+
+my %htabsum = ();                             # a hash of table name to row size
+
+for (my $i=0;$i<=$sittabi;$i++) {
+   next if $sittab_rowsize[$i] == 0;
+   next if $sittab_tab[$i] eq "";
+   $htabsum{$sittab_tab[$i]} = $sittab_rowsize[$i];
+}
+
+# Review records with a zero row size and use if found from just calculated
+
+for (my $i=0;$i<=$sittabi;$i++) {
+   next if $sittab_rowsize[$i] > 0;
+   next if $sittab_tab[$i] eq "";
+   my $looksize = $htabsum{$sittab_tab[$i]};
+   next if !defined $looksize;
+   $sittab_rowsize[$i] = $looksize;
+}
+
+# For any cases that are still missing, reference a built in table of rowsizes.
+
+for (my $i=0;$i<=$sittabi;$i++) {
+   next if $sittab_rowsize[$i] > 0;
+   next if $sittab_tab[$i] eq "";
+   my $looksize = $htabsize{$sittab_tab[$i]};
+   next if !defined $looksize;
+   $sittab_rowsize[$i] = $looksize;
+}
 
 $cnt++;$oline[$cnt]="Agent Workload Audit Report by Situation and Table\n";
 $cnt++;$oline[$cnt]="\n";
 $cnt++;$oline[$cnt]="Situation,Table,Time_Taken,Instance,Collections,Sendrows,Collect_Rows,Collect_Filter,Row_Size,Delay_Eval,DelaySample,Delay_Send\n";
 foreach my $f ( sort { $sittab_coltime[$sittabx{$b}] <=> $sittab_coltime[$sittabx{$a}] } keys %sittabx ) {
    my $i = $sittabx{$f};
+   next if $sittab_sit[$i] eq "dummysit";
    $outl = $sittab_sit[$i] . ",";
    $outl .= $sittab_tab[$i] . ",";
    $outl .= $sittab_coltime[$i] . ",";
@@ -1351,8 +1569,11 @@ foreach my $f ( sort { $sittab_coltime[$sittabx{$b}] <=> $sittab_coltime[$sittab
    $outl .= $sittab_delayeval[$i] . ",";
    $outl .= $sittab_delaysample[$i] . ",";
    $outl .= $sittab_delaysend[$i] . ",";
+   $outl .= $sittab_objid[$i] . "," if $opt_objid == 1;
    $cnt++;$oline[$cnt]="$outl\n";
 }
+$outl = "Duration," . $sit_duration . ",";
+$cnt++;$oline[$cnt]="$outl\n";
 
 #print "\n";
 #print "Agent Workload Audit with Object ID\n";
@@ -1433,11 +1654,22 @@ if ($acti != -1) {
    }
 }
 
-$DB::single=2;
+open OH, ">$opt_o" or die "can't open $opt_o: $!";
+
+#$DB::single=2;
+if ($opt_nohdr == 0) {
+   for (my $i=0;$i<=$hdri;$i++) {
+      $outl = $hdr[$i] . "\n";
+      print OH $outl;
+   }
+   print OH "\n";
+}
 
 for (my $i=0;$i<=$cnt;$i++) {
-   print $oline[$i];
+   print OH $oline[$i];
 }
+
+close OH;
 
 exit 0;
 
@@ -1864,3 +2096,5 @@ exit;
 #------------------------------------------------------------------------------
 # 0.50000 - new script based on temsaud.pl version 1.25000
 # 0.60000 - extend logic and remove temsaud specific logic
+# 0.70000 - clean up tests add -nohdr option for regression testing
+#         - add -objid option, add duration tests
