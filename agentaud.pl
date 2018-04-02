@@ -20,7 +20,7 @@
 ## Todos
 #  Handle Agent side historical traces - needs definition and work.
 
-$gVersion = 0.75000;
+$gVersion = 0.76000;
 $gWin = (-e "C:/") ? 1 : 0;       # determine Windows versus Linux/Unix for detail settings
 
 # CPAN packages used
@@ -94,6 +94,7 @@ my $opt_logpat;
 my $opt_logpath;
 my $full_logfn;
 my $opt_v;
+my $workdel = "";
 my $opt_cmdall;                                  # show all commands
 
 sub gettime;                             # get time
@@ -107,11 +108,13 @@ sub init_lst;                            # input from lst file
 # Windows, Linux, Unix tables only at the moment
 
 my %htabsize = (
+   'KPX.RNODESTS'      => '220',
    'OMUNX.UNIXAMS'     => '212',
    'OMUNX.UNIXDUSERS'  => '1668',
    'OMUNX.UNIXDEVIC'   => '560',
    'OMUNX.UNIXLVOLUM'  => '1240',
    'OMUNX.UNIXLPAR'    => '1556',
+   'OMUNX.FILEINFO'    => '4184',                     # missing from load projections
    'OMUNX.AIXPAGMEM'   => '208',
    'OMUNX.AIXMPIOATR'  => '560',
    'OMUNX.AIXMPIOSTS'  => '560',
@@ -730,7 +733,7 @@ for(;;)
    }
 
    # continuation is without a locus
-   elsif ($state == 3) {                    # state 3 = potentially collect second part of line
+   elsif ($state == 3) {                    # state 3 = potentially collect next part of line
       # case 1 - look for the + sign which means a second line of trace output
       #   emit data and resume looking for more
       if (substr($inline,21+$offset,1) eq "+") {
@@ -852,7 +855,7 @@ for(;;)
       $logentry = $5;                # function name
    }
    else {                            # z/OS has three pieces
-      $locus =~ /\((.*):(.*)\,\"(.*)\"\)/;
+      $locus =~ /\((.*)-(.*):(.*)\,\"(.*)\"\)/;
       $logline = 0;      ##???
       $logthread = "T" . $1;
       $logunit = $2;
@@ -1404,7 +1407,7 @@ for (my $i=0; $i<=$histruni; $i++) {
    $sittab_colfilt[$kx] += $sitref->{colfilt};
    $sittab_coltime[$kx] += $sitref->{coltime};
    $sittab_rowsize[$kx] = $sitref->{rowsize} if defined $sitref->{rowsize};
-   $sittab_objid[$kx] .=  "=\"" . $sitref->{objid} . "\"",;
+   $sittab_objid[$kx] .=  "\"" . $sitref->{objid} . "\"",;
    $sittab_delayeval[$kx] += $sitref->{delayeval};
    $sittab_delaysample[$kx] += $sitref->{delaysample};
    $sittab_delaysend[$kx] += $sitref->{delaysend};
@@ -1444,7 +1447,7 @@ foreach my $f (keys %sitrun) {
    $sittab_colfilt[$kx] += $sitref->{colfilt};
    $sittab_coltime[$kx] += $sitref->{coltime};
    $sittab_rowsize[$kx] = $sitref->{rowsize} if defined $sitref->{rowsize};
-   $sittab_objid[$kx] .=  "=\"" . $sitref->{objid} . "\"",;
+   $sittab_objid[$kx] .=  "\"" . $sitref->{objid} . "\"",;
    $sittab_delayeval[$kx] += $sitref->{delayeval};
    $sittab_delaysample[$kx] += $sitref->{delaysample};
    $sittab_delaysend[$kx] += $sitref->{delaysend};
@@ -1516,10 +1519,12 @@ foreach my $f ( sort { $sittab_coltime[$sittabx{$b}] <=> $sittab_coltime[$sittab
    $outl .= $sittab_tab[$i] . ",";
    $outl .= $sittab_coltime[$i] . ",";
    $sittab_cum_coltime += $sittab_coltime[$i];
-   $res_pc = int(($sittab_coltime[$i]*100)/$sittab_total_coltime);
+   $res_pc = 0;
+   $res_pc = int(($sittab_coltime[$i]*100)/$sittab_total_coltime) if $sittab_total_coltime > 0;
    $ppc = sprintf '%.0f%%', $res_pc;
    $outl .= $ppc . ",";
-   $res_pc = int(($sittab_cum_coltime*100)/$sittab_total_coltime);
+   $res_pc = 0;
+   $res_pc = int(($sittab_cum_coltime*100)/$sittab_total_coltime) if $sittab_total_coltime > 0;
    $ppc = sprintf '%.0f%%', $res_pc;
    $outl .= $ppc . ",";
    $outl .= $sittab_instance[$i] . ",";
@@ -1559,13 +1564,15 @@ foreach my $f ( sort { $sittab_colbytes[$sittabx{$b}] <=> $sittab_colbytes[$sitt
    $outl .= $sittab_colrows[$i] . ",";
    $outl .= $sittab_colfilt[$i] . ",";
    $outl .= $sittab_colbytes[$i] . ",";
+   $res_pc = 0;
+   $res_pc = int($sittab_colbytes[$i]*100)/$sittab_total_colbytes  if $sittab_total_colbytes > 0;
+   $ppc = sprintf '%.0f%%', $res_pc;
+   $outl .= $ppc . ",";
    $sittab_cum_colbytes += $sittab_colbytes[$i];
-   $res_pc = int(($sittab_colbytes[$i]*100)/$sittab_total_colbytes);
-   $ppc = sprintf '%.0f%%', $res_pc;
-   $outl .= $ppc . ",";
-   $res_pc = int(($sittab_cum_colbytes*100)/$sittab_total_colbytes);
-   $ppc = sprintf '%.0f%%', $res_pc;
-   $outl .= $ppc . ",";
+   $res_pc = 0;
+   $res_pc = int($sittab_cum_colbytes*100)/$sittab_total_colbytes  if $sittab_total_colbytes > 0;
+   $ppc = sprintf '%.0f', $res_pc;
+   $outl .= $ppc . "%,";
    $outl .= $sittab_rowsize[$i] . ",";
    $outl .= $sittab_delayeval[$i] . ",";
    $outl .= $sittab_delaysample[$i] . ",";
@@ -1613,7 +1620,7 @@ if ($acti != -1) {
       $pcommand =~ s/\x0A/\\n/g;
       $pcommand =~ s/\x0D/\\r/g;
       $pcommand =~ s/\"/\"\"/g;
-      $outl .= "=\"" . $pcommand . "\"";
+      $outl .= "\"" . $pcommand . "\"";
       $cnt++;$oline[$cnt]=$outl . "\n";
       $act_ct_total += $act_ct[$i];
       $act_ct_error += $act_err[$i];
@@ -1630,7 +1637,7 @@ if ($acti != -1) {
                $pcommand =~ s/\x00/\\0/g;
                $pcommand =~ s/\"/\"\"/g;
                $pcommand =~ s/\'/\'\'/g;
-               $outl .= "=\"" . $pcommand . "\",";
+               $outl .= "\"" . $pcommand . "\",";
                $cnt++;$oline[$cnt]=$outl . "\n";
             }
          }
@@ -1954,7 +1961,7 @@ sub open_kib {
          $todo{$dlog} = hex($itime);               # Add to array of logs
          close($dh);
       }
-     #$segmax -= 1;
+      $segmax -= 1;
 
       foreach $f ( sort { $todo{$a} <=> $todo{$b} } keys %todo ) {
          $segi += 1;
@@ -1973,7 +1980,7 @@ sub read_kib {
       $segp = 0;
       if ($segmax > 0) {
          my $seg_diff_time = $seg_time[1] - $seg_time[0];
-         if ($seg_diff_time > 600) {
+         if ($seg_diff_time > 3600) {
             $skipzero = 1;
          }
       }
@@ -2050,7 +2057,9 @@ exit;
 }
 #------------------------------------------------------------------------------
 # 0.50000 - new script based on temsaud.pl version 1.25000
-# 0.60000 - extend logic and remove agentsaud specific logic
+# 0.60000 - extend logic and remove temsaud specific logic
 # 0.70000 - clean up tests add -nohdr option for regression testing
 #         - add -objid option, add duration tests
 # 0.75000 - if available get situation list and validate running situations
+# 0.76000 - Corrections for z/OS mode
+#           Improve collecting rowsize
