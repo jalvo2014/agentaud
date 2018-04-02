@@ -17,7 +17,7 @@
 #
 # $DB::single=2;   # remember debug breakpoint
 
-$gVersion = 0.82000;
+$gVersion = 0.83000;
 $gWin = (-e "C:/") ? 1 : 0;       # determine Windows versus Linux/Unix for detail settings
 
 ## Todos
@@ -126,6 +126,7 @@ my $opt_cmdall;                                  # show all commands
 sub gettime;                             # get time
 sub init_txt;                            # input from txt file
 sub init_lst;                            # input from lst file
+sub getstamp;                            # convert epoch into slot stamp
 
 %sitnamex = ();
 
@@ -340,6 +341,7 @@ my $sitref;
 my $histruni = -1;                           # count of history records
 my @histrun = ();                            # history of situation completions - when stopped
 
+my %sit_details = ();                        # what situations with detailed output
 
 my $hdri = -1;                               # some header lines for report
 my @hdr = ();                                #
@@ -354,6 +356,7 @@ $hdri++;$hdr[$hdri] = "Start: $audit_start_time";
 my $opt_nohdr;                               # when 1 no headers printed
 my $opt_objid;                               # when 1 print object id
 my $opt_o;                                   # when defined filename of report file
+my $opt_slot;                                # when defined specify history slots, default 60 minutes
 
 my $arg_start = join(" ",@ARGV);
 $hdri++;$hdr[$hdri] = "Runtime parameters: $arg_start";
@@ -381,6 +384,18 @@ while (@ARGV) {
             $opt_o = shift(@ARGV);
          }
       }
+   } elsif ($ARGV[0] eq "-sit") {
+      shift(@ARGV);
+      my $detone = shift(@ARGV);
+      die "sit specified but no situation found found\n" if !defined $detone;
+      die "sit specified but option found next\n" if substr($detone,0,1) eq "-";
+      my %sithist = ();                # template empty hash to hold detailed data per situation
+      $sit_details{$detone} = \%sithist;
+   } elsif ($ARGV[0] eq "-slot") {
+      shift(@ARGV);
+      $opt_slot = shift(@ARGV);
+      die "slot specified but no slot time found\n" if !defined $opt_slot;
+      die "slot must be an integer 1 to 60 minutes" if ($opt_slot < 1) or ($opt_slot > 60);
    } elsif ($ARGV[0] eq "-v") {
       $opt_v = 1;
       shift(@ARGV);
@@ -407,6 +422,7 @@ if (!defined $opt_cmdall) {$opt_cmdall = 0;}
 if (!defined $opt_nohdr) {$opt_nohdr = 0;}
 if (!defined $opt_objid) {$opt_objid = 0;}
 if (!defined $opt_o) {$opt_o = "agentaud.csv";}
+if (!defined $opt_slot) {$opt_slot = 60;}
 if (!defined $opt_v) {$opt_v = 0;}
 if (!defined $opt_vv) {$opt_vv = 0;}
 
@@ -1010,9 +1026,32 @@ for(;;)
                      delaysample => 0,               # total delay to sample
                      delaysend => 0,                 # total delay to send
                      delayeval => 0,                 # total delay to next evaluation
-
+                     slots => {},                    # hold details when wanted
          );
          $sitrun{$iobjid} = \%sitref;
+         if (defined $sit_details{$isitname}) {
+            my $slot = getstamp($logtime);
+            my $slot_ref = $sitref->{slots}{$slot};
+            if (!defined $slot_ref) {
+               my %slotref = (
+                                instance => 0,
+                                sendrows => 0,                  # number of rows sent to TEMS
+                                sendct => 0,                    # number of times rows sent to TEMS
+                                coltime => 0,
+                                delayeval => 0,
+                                delaysample => 0,
+                                delaysend => 0,
+                                colcount => 0,                  # number of collection samples
+                                colrows => 0,                   # number of rows collected
+                                colfilt => 0,                   # number of rows after filter
+                                coltime => 0,                   # seconds recorded for collection
+                                rowsize => 0,                   # size of rows
+                             );
+               $sitref->{slots}{$slot} = \%slotref;
+               $slot_ref = \%slotref;
+            }
+            $slot_ref->{instance} += 1;
+         }
       }
       next;
    }
@@ -1052,7 +1091,7 @@ for(;;)
    #   (5421D2F0.10BD-F:kraafira.cpp,890,"DriveDataCollection") KLZ.KLZPROC, <1357906681,1339032506> IBM_test_boa_1 expired.
    #   (5429E381.00DB-8:kraafira.cpp,890,"DriveDataCollection") KLZ.KLZPROC, <1823474271,2838496211>  expired.   *note* no situation name
    #   (54220145.001F-1:kraafira.cpp,404,"~ctira") Deleting request @0x8094fe80 <1357906597,1339032502> KLZ.KLZPROC, IBM_test_boa_1
-#$DB::single=2 if $l >= 20904;
+#$DB::single=2 if $l >= 36813;
 
 
    if (substr($logunit,0,12) eq "kraafira.cpp") {
@@ -1112,6 +1151,29 @@ for(;;)
                );
                $sitrun{$iobjid} = \%sit_ref;
                $sitref = \%sit_ref;
+            }
+            if (defined $sit_details{$isitname}) {
+               my $slot = getstamp($logtime);
+               my $slot_ref = $sitref->{slots}{$slot};
+               if (!defined $slot_ref) {
+                  my %slotref = (
+                                   instance => 0,
+                                   sendrows => 0,                  # number of rows sent to TEMS
+                                   sendct => 0,                    # number of times rows sent to TEMS
+                                   coltime => 0,
+                                   delayeval => 0,
+                                   delaysample => 0,
+                                   delaysend => 0,
+                                   colcount => 0,                  # number of collection samples
+                                   colrows => 0,                   # number of rows collected
+                                   colfilt => 0,                   # number of rows after filter
+                                   coltime => 0,                   # seconds recorded for collection
+                                   rowsize => 0,                   # size of rows
+                                );
+                  $sitref->{slots}{$slot} = \%slotref;
+                  $slot_ref = \%slotref;
+               }
+               $slot_ref->{colcount} += 1;
             }
             $sitref->{state} = 2;
             $sitref->{colcount} += 1;
@@ -1205,9 +1267,35 @@ for(;;)
                            delaysample => 0,               # total delay to sample
                            delaysend => 0,                 # total delay to send
                            delayeval => 0,                 # total delay to next evaluation
+                           slots => {},                    # hold details when wanted
 
                );
                $sitrun{$iobjid} = \%sitref;
+            }
+            if (defined $sit_details{$isitname}) {
+               my $slot = getstamp($logtime);
+               my $slot_ref = $sitref->{slots}{$slot};
+               if (!defined $slot_ref) {
+                  my %slotref = (
+                                   instance => 0,
+                                   sendrows => 0,                  # number of rows sent to TEMS
+                                   sendct => 0,                    # number of times rows sent to TEMS
+                                   coltime => 0,
+                                   delayeval => 0,
+                                   delaysample => 0,
+                                   delaysend => 0,
+                                   colcount => 0,                  # number of collection samples
+                                   colrows => 0,                   # number of rows collected
+                                   colfilt => 0,                   # number of rows after filter
+                                   coltime => 0,                   # seconds recorded for collection
+                                   rowsize => 0,                   # size of rows
+                                );
+                  $sitref->{slots}{$slot} = \%slotref;
+                  $slot_ref = \%slotref;
+#my $x = 1;
+               }
+               $slot_ref->{instance} += 1;
+#my $x = 1;
             }
          }
       } elsif ($logentry eq "InsertRow") {
@@ -1226,6 +1314,12 @@ for(;;)
                         $sitref->{rowsize} = $irowsize;
                         $itable = $sitref->{table};
                         $tabsize{$itable} = $irowsize;
+                        if (defined $sit_details{$sitref->{sitname}}) {
+                           my $slot = getstamp($sitref->{exptime});
+                           my $slot_ref = $sitref->{slots}{$slot};
+                           $slot_ref->{rows} = $irowsize;
+#my $x = 1;
+                        }
                      }
                   }
                }
@@ -1250,6 +1344,12 @@ for(;;)
                         $sitref->{colrows} += 1;
                         $sitref->{colfilt} += 1 if substr($rest,7,3) eq "0x0";
                         $sitref->{time_sample} = $logtime if  $sitref->{time_sample} == 0;
+                     }
+                     if (defined $sit_details{$sitref->{sitname}}) {
+                        my $slot = getstamp($sitref->{exptime});
+                        my $slot_ref = $sitref->{slots}{$slot};
+                        $slot_ref->{colrows} += 1;
+                        $slot_ref->{colfilt} += 1 if substr($rest,7,3) eq "0x0";
                      }
                   }
                }
@@ -1330,6 +1430,7 @@ for(;;)
             if (defined $sitref) {
                if ($sitref->{sitname} eq "HEARTBEAT") {
                   $sitref->{sendct} += 1;
+                  $sitref->{sendrows} += 1;
                   $sitref->{colrows} += 1;
                   $sitref->{colfilt} += 1;
                }
@@ -1340,6 +1441,12 @@ for(;;)
                   $sitref->{time_send} = $logtime;
                   $sitref->{time_sample} = $logtime if $sitref->{time_sample} == 0;
                   delete $thrun{$logthread};
+               }
+               if (defined $sit_details{$sitref->{sitname}}) {
+                  my $slot = getstamp($sitref->{exptime});
+                  my $slot_ref = $sitref->{slots}{$slot};
+                  $slot_ref->{sendrows} += $srows;
+                  $slot_ref->{sendct} += 1;
                }
             }
             next;
@@ -1401,8 +1508,16 @@ for(;;)
             $sitref->{coltime} += $itaken;            # time in data collection
             $sitref->{time_next} = $sitref->{time_expired} if $sitref->{time_next} == 0;
             $sitref->{delayeval} += $sitref->{time_expired} - $sitref->{time_next};
-            $sitref->{delaysample} += $sitref->{time_sample} - $sitref->{time_expired} if $sitref->{time_sample} > 0; ;
+            $sitref->{delaysample} += $sitref->{time_sample} - $sitref->{time_expired} if $sitref->{time_sample} > 0;
             $sitref->{delaysend} += $sitref->{time_send} - $sitref->{time_expired} if $sitref->{time_send} > 0;
+            if (defined $sit_details{$sitref->{sitname}}) {
+               my $slot = getstamp($sitref->{exptime});
+               my $slot_ref = $sitref->{slots}{$slot};
+               $slot_ref->{coltime} += $itaken;
+               $slot_ref->{delayeval} += $sitref->{time_expired} - $sitref->{time_next};
+               $slot_ref->{delaysample} += $sitref->{time_sample} - $sitref->{time_expired} if $sitref->{time_sample} > 0;
+               $slot_ref->{delaysend} += $sitref->{time_send} - $sitref->{time_expired} if $sitref->{time_send} > 0;
+            }
             $sitref->{time_next} = $inext;
             $sitref->{time_expired} = 0;
             $sitref->{time_sample} = 0;
@@ -1545,47 +1660,11 @@ my $sittab_total_colbytes = 0;
 
 for (my $i=0; $i<=$histruni; $i++) {
    $sitref = $histrun[$i];
-#  $key = $sitref->{sitname} . "!" . $sitref->{table} . "!" . $sitref->{objid};
-   $key = $sitref->{sitname} . "!" . $sitref->{table};
-   $kx = $sittabx{$key};
-   if (!defined $kx) {
-      $sittabi += 1;
-      $kx = $sittabi;
-      $sittab[$kx] = $key;
-      $sittabx{$key} = $kx;
-      $sittab_sit[$kx] = $sitref->{sitname};
-      $sittab_tab[$kx] = $sitref->{table};
-      $sittab_instance[$kx] = 0;
-      $sittab_sendrows[$kx] = 0;
-      $sittab_colct[$kx] = 0;
-      $sittab_colrows[$kx] = 0;
-      $sittab_colbytes[$kx] = 0;
-      $sittab_colfilt[$kx] = 0;
-      $sittab_coltime[$kx] = 0;
-      $sittab_rowsize[$kx] = 0;
-      $sittab_objid[$kx] = "";
-      $sittab_delayeval[$kx] = 0;
-      $sittab_delaysample[$kx] = 0;
-      $sittab_delaysend[$kx] = 0;
-   }
-   $sittab_instance[$kx] += 1;
-   $sittab_sendrows[$kx] += $sitref->{sendrows};
-   $sittab_colct[$kx] += $sitref->{colcount};
-   $sittab_colrows[$kx] += $sitref->{colrows};
-   $sittab_colfilt[$kx] += $sitref->{colfilt};
-   $sittab_coltime[$kx] += $sitref->{coltime};
-   $sittab_rowsize[$kx] = $sitref->{rowsize} if defined $sitref->{rowsize};
-   $sittab_objid[$kx] .=  "\"" . $sitref->{objid} . "\"",;
-   $sittab_delayeval[$kx] += $sitref->{delayeval};
-   $sittab_delaysample[$kx] += $sitref->{delaysample};
-   $sittab_delaysend[$kx] += $sitref->{delaysend};
+   $sitrun{$sitref->{objid}} = $sitref;
 }
 
 foreach my $f (keys %sitrun) {
    $sitref = $sitrun{$f};
-#  next if $sitref->{state} != 2;
-#  $key = $sitref->{sitname} . "!" . $sitref->{table} . "!" . $sitref->{objid};
-
    $key = $sitref->{sitname} . "!" . $sitref->{table};
    $kx = $sittabx{$key};
    if (!defined $kx) {
@@ -1657,6 +1736,7 @@ for (my $i=0;$i<=$sittabi;$i++) {
    next if !defined $looksize;
    $sittab_rowsize[$i] = $looksize;
    $sittab_colbytes[$i] = $sittab_colrows[$i]*$sittab_rowsize[$i];
+   $htabsum{$sittab_tab[$i]} = $looksize;
 }
 
 # calculate totals
@@ -1791,6 +1871,33 @@ foreach my $f ( sort { $sittab_colbytes[$sittabx{$b}] <=> $sittab_colbytes[$sitt
 }
 $outl = "Duration," . $sit_duration . "," . $sittab_total_coltime . ",,,,,," . $sittab_total_colbytes . ",,,";
 $cnt++;$oline[$cnt]="$outl\n";
+
+foreach my $f (keys %sitrun) {
+   $sitref = $sitrun{$f};
+   next if !defined $sit_details{$sitref->{sitname}};
+   $cnt++;$oline[$cnt]="\n";
+   $cnt++;$oline[$cnt]="Agent Workload Audit Detail Report for Situation $sitref->{sitname} Table $sitref->{table} ObjectId $f\n";
+   my $prowsize = $htabsum{$sitref->{table}};
+   $prowsize = 0 if !defined $prowsize;
+   $cnt++;$oline[$cnt]="Slot_Time,Time_Taken,Collections,Send_count,Sendrows,Collect_Rows,Collect_Filter,Collect_Bytes,Row_Size,Delay_Eval,DelaySample,Delay_Send\n";
+   foreach my $s ( sort { $a <=> $b} keys %{$sitref->{slots}}) {
+      my $slot_ref = $sitref->{slots}{$s};
+      my $outl = $s . ",";
+      $outl .= $slot_ref->{coltime} . ",";
+      $outl .= $slot_ref->{colcount} . ",";
+      $outl .= $slot_ref->{sendct} . ",";
+      $outl .= $slot_ref->{sendrows} . ",";
+      $outl .= $slot_ref->{colrows} . ",";
+      $outl .= $slot_ref->{colfilt} . ",";
+      my $cb = $slot_ref->{colrows} * $prowsize;
+      $outl .= $cb . ",";
+      $outl .= $prowsize . ",";
+      $outl .= $slot_ref->{delayeval} . ",";
+      $outl .= $slot_ref->{delaysample} . ",";
+      $outl .= $slot_ref->{delaysend} . ",";
+      $cnt++;$oline[$cnt]="$outl\n";
+   }
+}
 
 #print "\n";
 #print "Agent Workload Audit with Object ID\n";
@@ -1978,86 +2085,6 @@ $respermin = int($sitres_tot / ($dur / 60));
 $outl .= $respermin;
 $cnt++;$oline[$cnt]=$outl . "\n";
 
-my $total_hist_rows = 0;
-my $total_hist_bytes = 0;
-$hist_elapsed_time = $hist_max_time - $hist_min_time;
-my $time_elapsed;
-
-
-if ($histi != -1) {
-   $cnt++;$oline[$cnt]="\n";
-   $cnt++;$oline[$cnt]="Historical Export summary by object\n";
-   $cnt++;$oline[$cnt]="Object,Table,Appl,Rowsize,Rows,Bytes,Bytes_Min,Cycles,MinRows,MaxRows,AvgRows,LastRows\n";
-   foreach $f ( sort { $hist[$histx{$a}] cmp $hist[$histx{$b}] } keys %histx ) {
-      $i = $histx{$f};
-      my $rows_cycle = 0;
-      $rows_cycle = int($hist_totrows[$i]/$hist_cycles[$i]) if $hist_cycles[$i] > 0;
-      $outl = $hist[$i] . ",";
-      $outl .= $hist_table[$i] . ",";
-      $outl .= $hist_appl[$i] . ",";
-      $outl .= $hist_rowsize[$i] . ",";
-      $outl .= $hist_rows[$i] . ",";
-      $outl .= $hist_bytes[$i] . ",";
-      my $hist_bytes_min = 0;
-      $hist_bytes_min = int(($hist_bytes[$i]*60)/$hist_elapsed_time) if $hist_elapsed_time > 0;
-      $outl .= $hist_bytes_min . ",";
-      $outl .= $hist_cycles[$i] . ",";
-      $outl .= $hist_minrows[$i] . ",";
-      $outl .= $hist_maxrows[$i] . ",";
-      $outl .= $rows_cycle . ",";
-      $outl .= $hist_lastrows[$i] . ",";
-      $cnt++;$oline[$cnt]=$outl . "\n";
-      $total_hist_rows += $hist_rows[$i];
-      $total_hist_bytes += $hist_bytes[$i];
-   }
-   $outl = "*total" . "," . "$hist_elapsed_time" . ",,,";
-   $outl .= $total_hist_rows . ",";
-   $outl .= $total_hist_bytes . ",";
-   $cnt++;$oline[$cnt]=$outl . "\n";
-}
-
-
-if ($histi != -1) {
-   $cnt++;$oline[$cnt]="\n";
-   $cnt++;$oline[$cnt]="Historical Export summary by time\n";
-   $cnt++;$oline[$cnt]="Time,,,,Rows,Bytes,Secs,Bytes_min\n";
-   foreach $f ( sort { $histtime[$histtimex{$a}] <=> $histtime[$histtimex{$b}] } keys %histtimex ) {
-      $i = $histtimex{$f};
-      $outl = $histtime[$i] . ",,,,";
-      $outl .= $histtime_rows[$i] . ",";
-      $outl .= $histtime_bytes[$i] . ",";
-      $time_elapsed = $histtime_max_time[$i] - $histtime_min_time[$i] + 1;
-      $outl .= $time_elapsed . ",";
-      $outl .= int(($histtime_bytes[$i]*60)/$time_elapsed) . ",";
-      $cnt++;$oline[$cnt]=$outl . "\n";
-   }
-   $outl = "*total" . "," . "$hist_elapsed_time" . ",,,";
-   $outl .= $total_hist_rows . ",";
-   $outl .= $total_hist_bytes . ",";
-   $cnt++;$oline[$cnt]=$outl . "\n";
-}
-
-if ($histi != -1) {
-   $cnt++;$oline[$cnt]="\n";
-   $cnt++;$oline[$cnt]="Historical Export summary by Object and time\n";
-   $cnt++;$oline[$cnt]="Object,Table,Appl,Rowsize,Rows,Bytes,Time\n";
-#   foreach $f ( sort { $histobjectx{$a} cmp $histobjectx{$b} } keys %histobjectx ) {
-   foreach $f ( sort keys %histobjectx ) {
-      $i = $histobjectx{$f};
-      $outl = $f . ",";
-      $outl .= $histobject_table[$i] . ",";
-      $outl .= $histobject_appl[$i] . ",";
-      $outl .= $histobject_rowsize[$i] . ",";
-      $outl .= $histobject_rows[$i] . ",";
-      $outl .= $histobject_bytes[$i] . ",";
-      $outl .= $histobject_time[$i] . ",";
-      $cnt++;$oline[$cnt]=$outl . "\n";
-   }
-   $outl = "*total" . "," . "$hist_elapsed_time" . ",,,";
-   $outl .= $total_hist_rows . ",";
-   $outl .= $total_hist_bytes . ",";
-   $cnt++;$oline[$cnt]=$outl . "\n";
-}
 
 for (my $i=0; $i<=$hdri; $i++) {
    print $hdr[$i] . "\n";
@@ -2231,6 +2258,32 @@ sub gettime
    return sprintf "%4d-%02d-%02d %02d:%02d:%02d",$year+1900,$mon+1,$mday,$hour,$min,$sec;
 }
 
+my %stampx;
+
+sub getstamp {
+   my $epoch = shift;
+   my $hist_min;
+   my $hist_hour;
+   my $hist_day;
+   my $hist_month;
+   my $hist_year;
+   my $stampr = $stampx{$epoch};
+   if (!defined $stampr) {
+      $hist_min = (localtime($epoch))[1];
+      $hist_min = int($hist_min/$opt_slot) * $opt_slot;
+      $hist_min = '00' . $hist_min;
+      $hist_hour = '00' . (localtime($epoch))[2];
+      $hist_day  = '00' . (localtime($epoch))[3];
+      $hist_month = (localtime($epoch))[4] + 1;
+      $hist_month = '00' . $hist_month;
+      $hist_year =  (localtime($epoch))[5] + 1900;
+      $stampr = substr($hist_year,-2,2) . substr($hist_month,-2,2) . substr($hist_day,-2,2) .  substr($hist_hour,-2,2) .  substr($hist_min,-2,2);
+      $stampx{$epoch} = $stampr;
+   }
+   return $stampr;
+}
+
+
 
 #------------------------------------------------------------------------------
 sub GiveHelp
@@ -2278,3 +2331,4 @@ exit;
 # 0.81000 - Handle ITM 622 level traces
 # 0.82000 - Add two rare KPX tables and KNT.NTMNTPT
 #         - Correct pure event situation calculation
+# 0.83000 - Add situation detail report over time
