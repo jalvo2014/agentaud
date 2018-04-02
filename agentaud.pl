@@ -19,8 +19,31 @@
 
 ## Todos
 #  Handle Agent side historical traces - needs definition and work.
+#  Handle Pure situations
 
-$gVersion = 0.76000;
+#          Data row is filtered
+# (54931626.0DA9-11:kdsflt1.c,1427,"FLT1_FilterRecord") Entry
+# (54931626.0DAC-11:kdsflt1.c,1464,"FLT1_FilterRecord") Exit: 0x1      <=== row fails filter
+# (54931625.023C-3:kdsflt1.c,1464,"FLT1_FilterRecord") Exit: 0x0       <=== row passes filter
+
+#         Potential row data is produced - including sitname
+# (54931626.0DAE-11:kraaevxp.cpp,501,"CreateSituationEvent") *EV-INFO: Input event: obj=0x1111FA530, type=5, excep=0, numbRow=1, rowData=0x110ADF640, status=0, sitname="UNIX_LAA_Bad_su_to_root_Warning"
+# (54931626.0DB2-11:kraaevxp.cpp,562,"CreateSituationEvent") *EV-INFO: Use request <1111FA530> handle <294650831> element <111167790>
+# (54931626.0DB4-11:kraaevxp.cpp,414,"EnqueueEventWork") *EV-INFO: Enqueue event work element 111167790 to Dispatcher
+# (54931626.0DB5-11:kraaprdf.cpp,228,"CheckForException") Exit: 0x0
+# (54931626.0DB7-11:kraulleb.cpp,194,"AddData") Exit: 0x0
+# (unit:kraaevxp,Entry="CreateSituationEvent" detail er)
+#
+#         No data is sent
+# (54931626.0DBB-11:kraadspt.cpp,868,"sendDataToProxy") Entry
+# (54931626.0DBD-11:kraadspt.cpp,955,"sendDataToProxy") Exit
+
+#         Some data is sent
+# (54931626.0DBB-11:kraadspt.cpp,868,"sendDataToProxy") Entry
+# (54931625.04D0-3:kraadspt.cpp,889,"sendDataToProxy") Sending 14 rows for UNIX_LAA_Log_Size_Warning KUL.ULMONLOG, <722472833,294650830>.
+# (54931626.0DBD-11:kraadspt.cpp,955,"sendDataToProxy") Exit
+
+$gVersion = 0.80000;
 $gWin = (-e "C:/") ? 1 : 0;       # determine Windows versus Linux/Unix for detail settings
 
 # CPAN packages used
@@ -272,7 +295,11 @@ my %htabsize = (
    'KLZ.LNXSYS'      => '312',
    'KLZ.LNXLOGIN'    => '524',
    'KLZ.LNXVM'       => '336',
+   'KUL.ULLOGENT'    => '2864',
+   'KUL.ULMONLOG'    => '1988',
 );
+
+my %hsitdata;                                # hash of situation name to pure/sampled
 
 
 my $sit_start = 0;                           # first expired time
@@ -284,6 +311,7 @@ my $isitname;                                # incoming situation name
 my $iobjid;                                  # incoming object id nnnnnnnn,nnnnnnnnn
 my $itable;                                  # incoming table
 my $ithread;                                 # incoming thread
+my $isittype;                                # type of sit 1=sampled, 4=pure
 my $itaken;                                  # calculated seconds for sample time
 my $irowsize;                                # size of rows
 my $inext;                                   # time for next evaluation
@@ -295,7 +323,11 @@ my $sitseq = -1;                             # unique sit identifier
 
 my $kx;
 my %sitrun = ();                             # hash of current running situation data
-my %thrun = ();                              # index from thread to current run sit
+my %sitpure = ();                            # hash of observed pure situations running
+my $pure_start = 0;
+my $pure_end = 0;
+my $pure_dur = 0;
+my %thrun = ();                              # index from thread to current capture hash
 my %tabsize = ();                            # record size of attribute table
 my $sitref;
 
@@ -829,6 +861,7 @@ for(;;)
    # (53FE31BA.0045-61C:kglhc1c.c,601,"KGLHC1_Command") <0x190B4CFB,0x8A> Command String
    # +53FE31BA.0045     00000000   443A5C73 63726970  745C756E 69782031   D:\script\unix.1
    # +53FE31BA.0045     00000010   31343038 32373134  31353038 30303020   140827141508000.
+
    if (substr($oneline,0,1) eq "+")  {
       $contkey = substr($oneline,1,13);
       $runref = $contx{$contkey};
@@ -875,7 +908,6 @@ for(;;)
          }
       }
    }
-   next if $skipzero;
 
    #  Tracing notes
    #  error
@@ -888,7 +920,41 @@ for(;;)
    #  (unit:kraadspt,Entry="sendDataToProxy" all er)
    #  (unit:kraatblm,Entry="resetExpireTime" all er)
    #  (unit:kglhc1c all er)
+   #  (unit:kraaevst,Entry="createDispatchSitStat" flow er)
+   #  (unit:kraaevxp,Entry="CreateSituationEvent" detail er)
 
+   # Following entry is the best source of situation information, but not always present if situations are being stopped and started
+   # (54931626.0693-1F:kraaevst.cpp,300,"createDispatchSitStat") *EV-INFO: Exception<0> Situation UNIX_LAA_Bad_su_to_root_Warning <294650831.307234630> KUL.ULLOGENT Type<4> Interval<0> rowSize<2864> rowCount<0> rowData<1113CBA34>
+   if (substr($logunit,0,12) eq "kraaevst.cpp") {
+      if ($logentry eq "createDispatchSitStat") {
+         $oneline =~ /^\((\S+)\)(.+)$/;
+         $rest = $2; # *EV-INFO: Exception<0> Situation UNIX_LAA_Bad_su_to_root_Warning <294650831.307234630> KUL.ULLOGENT Type<4> Interval<0> rowSize<2864> rowCount<0> rowData<1113CBA34>
+         next if substr($rest,1,19) ne "*EV-INFO: Exception";
+         $rest =~ /^.*Situation (\S+) \S+ (\S+) Type<(\d)> Interval<(\d+)> rowSize<(\d+)> /;
+         $isitname = $1;
+#$DB::single=2;
+         $itable = $2;
+         $isittype = $3;
+         $irowsize = $5;
+         my $ht = $hsitdata{$isitname};
+         if (!defined $ht) {
+            my %htref = (
+                           sitname => $isitname,
+                           table => $itable,
+                           type => $isittype,
+                           rowsize => $irowsize,
+                        );
+            $hsitdata{$isitname} = \%htref;
+            $tabsize{$itable} = $irowsize if !defined $tabsize{$itable};
+         }
+      }
+      next;
+   }
+
+   # If log segments are wrapping around, wait until past segment zero for more understanding
+   next if $skipzero;
+
+   #   Following is typical for a sampled situation or a real time data request
    #   (5421D2F0.0550-D:kraafmgr.cpp,816,"Start") Start complete IBM_test_boa <1355809413,1339032522> on *.KLZPROC, status = 0
    #   (5429E381.00C3-1:kraafmgr.cpp,816,"Start") Start complete  <1823474271,2838496211> on *.KLZPROC, status = 0
    if (substr($logunit,0,12) eq "kraafmgr.cpp") {
@@ -943,7 +1009,7 @@ for(;;)
    # and record situation name, attribute table, and request key
    # *note* there may be more then one request/table associated with a situation
    #        could be many of them. Also there may be more then one situation instance
-   #        as situation stop and start. Situation with Action command also two instances.
+   #        as situation stop and start. Situation with Action command have two instances.
 
    # Stopping a situation
    #   (54220145.001C-1:kraafmgr.cpp,841,"Stop") Stop received for IBM_test_boa_1 <1357906597,1339032502> on KLZ.KLZPROC, status = 0
@@ -1040,15 +1106,25 @@ for(;;)
             $sitref->{table} = $itable;
             $sitref->{time_expired} = $logtime;
             $sitref->{time_sample} = 0;
-            $thrun{$logthread} = $iobjid;
-                                           # Exit: 0x0
+            my %capref = (type => 1,                      # sampled capture = 1
+                          state => 0,                     # track between capture records
+                          objid => $iobjid,               # object id
+                          sitname => $isitname,           # situation name
+                          filtered => 0,                  # number of rows filtered
+                          sent => 0,                      # number of rows sent
+                          table => "",                    # related table
+                );
+            $thrun{$logthread} = \%capref;                # Associate capture record with thread number
          } elsif (substr($rest,1,5) eq "Exit:") {
-            $iobjid = $thrun{$logthread};
-            if (defined $iobjid) {
-               $sitref = $sitrun{$iobjid};
-               if (defined $sitref) {
-                  if ($sitref->{state} == 2) {
-                     $sitref->{state} = 3;
+            my $cap_ref = $thrun{$logthread};
+            if (defined $cap_ref) {
+               if ($cap_ref->{type} == 1) {
+                  $iobjid = $cap_ref->{objid};
+                  $sitref = $sitrun{$iobjid};
+                  if (defined $sitref) {
+                     if ($sitref->{state} == 2) {
+                        $sitref->{state} = 3;
+                     }
                   }
                }
             }
@@ -1056,6 +1132,7 @@ for(;;)
          next;
       } elsif ($logentry eq "~ctira") {
          $oneline =~ /^\((\S+)\)(.+)$/;
+                                           # seen when situation being stopped or after real time request finished
          $rest = $2;                       # Deleting request @0x8094fe80 <1357906597,1339032502> KLZ.KLZPROC, IBM_test_boa_1
          if (substr($rest,1,8) eq "Deleting") {
             $rest =~ /.*? <(.*?)> (\S+), (\S+)/;
@@ -1127,14 +1204,17 @@ for(;;)
          if (substr($rest,1,7) eq "rowsize") {
             $rest =~ / rowsize = (\d+),/;
             $irowsize = $1;
-            $iobjid = $thrun{$logthread};
-            if (defined $iobjid) {
-               $sitref = $sitrun{$iobjid};
-               if (defined $sitref) {
-                  if ($sitref->{state} == 2) {
-                     $sitref->{rowsize} = $irowsize;
-                     $itable = $sitref->{table};
-                     $tabsize{$itable} = $irowsize;
+            my $cap_ref = $thrun{$logthread};
+            if (defined $cap_ref) {
+               if ($cap_ref->{type} == 1) {
+                  $iobjid = $cap_ref->{objid};
+                  $sitref = $sitrun{$iobjid};
+                  if (defined $sitref) {
+                     if ($sitref->{state} == 2) {
+                        $sitref->{rowsize} = $irowsize;
+                        $itable = $sitref->{table};
+                        $tabsize{$itable} = $irowsize;
+                     }
                   }
                }
             }
@@ -1147,35 +1227,82 @@ for(;;)
          $oneline =~ /^\((\S+)\)(.+)$/;
          $rest = $2;                       # Exit: 0x1
          if (substr($rest,1,5) eq "Exit:") {
-             $iobjid = $thrun{$logthread};
-             if (defined $iobjid) {
-                $sitref = $sitrun{$iobjid};
-                if (defined $sitref) {
-                   if ($sitref->{state} == 2) {
-                      $sitref->{colrows} += 1;
-                      $sitref->{colfilt} += 1 if substr($rest,7,3) eq "0x0";
-                      $sitref->{time_sample} = $logtime if  $sitref->{time_sample} == 0;
-                   }
-                }
-             }
+            # if there is already a capture record, probably a sampled situation
+            my $cap_ref = $thrun{$logthread};
+            if (defined $cap_ref) {
+               if ($cap_ref->{type} == 1) {
+                  $iobjid = $cap_ref->{objid};
+                  $sitref = $sitrun{$iobjid};
+                  if (defined $sitref) {
+                     if ($sitref->{state} == 2) {
+                        $sitref->{colrows} += 1;
+                        $sitref->{colfilt} += 1 if substr($rest,7,3) eq "0x0";
+                        $sitref->{time_sample} = $logtime if  $sitref->{time_sample} == 0;
+                     }
+                  }
+               }
+            # if no capture record, this is the first record of a pure situation record evaluation
+            # the situation name arrives later but we need to record the filter success or failure now
+            } else {
+#              my $ht_ref = $hsitdata{$isitname};
+               my %capref = (type => 4,                      # sampled capture = 1, pure capture = 4
+                             state => 0,                     # track between capture records
+                             objid => "",                    # object id
+                             sitname => "",                  # situation name
+                             table => "",                    # related table
+                             filtered => 0,                  # number of rows filtered
+                             sent => 0,                      # number of rows sent
+               );
+               $thrun{$logthread} = \%capref;
+               $cap_ref =  $thrun{$logthread};
+               $cap_ref->{filtered} += 1;
+               $cap_ref->{sent} += 1 if substr($rest,7,3) eq "0x0";
+            }
          }
       } elsif ($logentry eq "FLT1_BeginSample") {
          $oneline =~ /^\((\S+)\)(.+)$/;
          $rest = $2;                       # Exit: 0x0
          if (substr($rest,1,5) eq "Exit:") {
-            $iobjid = $thrun{$logthread};
-            if (defined $iobjid) {
-               $sitref = $sitrun{$iobjid};
-               if (defined $sitref) {
-                  if ($sitref->{state} == 2) {
-                     $sitref->{time_sample} = $logtime;
+            my $cap_ref = $thrun{$logthread};
+            if (defined $cap_ref) {
+               if ($cap_ref->{type} == 1) {
+                  $iobjid = $cap_ref->{objid};
+                  $sitref = $sitrun{$iobjid};
+                  if (defined $sitref) {
+                     if ($sitref->{state} == 2) {
+                        $sitref->{time_sample} = $logtime;
+                     }
+                  }
+               }
+           }
+        }
+     }
+      next;
+   }
+
+   # capture pure situation sitname before sendDataProxy
+   # (54931626.0DAE-11:kraaevxp.cpp,501,"CreateSituationEvent") *EV-INFO: Input event: obj=0x1111FA530, type=5, excep=0, numbRow=1, rowData=0x110ADF640, status=0, sitname="UNIX_LAA_Bad_su_to_root_Warning"
+   if (substr($logunit,0,12) eq "kraaevxp.cpp") {
+      if ($logentry eq "CreateSituationEvent") {
+         my $cap_ref = $thrun{$logthread};
+         if (defined $cap_ref) {
+            if ($cap_ref->{type} == 4) {
+               $oneline =~ /^\((\S+)\)(.+)$/;
+               $rest = $2;  #*EV-INFO: Input event: obj=0x1111FA530, type=5, excep=0, numbRow=1, rowData=0x110ADF640, status=0, sitname="UNIX_LAA_Bad_su_to_root_Warning"
+               $rest =~ /sitname="(\S+)"/;
+               $isitname = $1;
+               my $ht_ref = $hsitdata{$isitname};
+               if (defined $ht_ref) {
+                  if ($ht_ref->{type} == 4) {
+                     $cap_ref->{sitname} = $isitname;
+                     $cap_ref->{table} = $ht_ref->{table};
                   }
                }
             }
          }
       }
-      next;
    }
+
 
    # (5422F619.1C18-F:kraadspt.cpp,889,"sendDataToProxy") Sending 1 rows for IBM_Linux_Process KLZ.KLZPROC, <1374684111,2226127825>.
    if (substr($logunit,0,12) eq "kraadspt.cpp") {
@@ -1183,11 +1310,8 @@ for(;;)
          $oneline =~ /^\((\S+)\)(.+)$/;
          $rest = $2;                       # Sending 1 rows for IBM_Linux_Process KLZ.KLZPROC, <1374684111,2226127825>.
          if (substr($rest,1,7) eq "Sending") {
-#         print "working on $l\n";
             $rest =~ / Sending (\d+) rows for (.*?), <(.*?)>/;
             $srows = $1;
-#            $isitname = $2;
-#            if (substr($isitname,0,1) eq " ") {
             $iobjid = $3;
             $sitref = $sitrun{$iobjid};
             if (defined $sitref) {
@@ -1201,6 +1325,39 @@ for(;;)
                }
             }
             next;
+
+            # at exit, collect any pure situation capture and accumulate to pure sit hash
+            # (54931626.0DBD-11:kraadspt.cpp,955,"sendDataToProxy") Exit
+         }  elsif (substr($rest,1,7) eq "Exit") {
+            my $cap_ref = $thrun{$logthread};
+            if (defined $cap_ref) {
+               if ($cap_ref->{type} == 4) {
+                  $isitname = $cap_ref->{sitname};
+                  my $pure_ref = $sitpure{$isitname};
+                  if (!defined $pure_ref) {
+                     my %pureref = (
+                                      table => $cap_ref->{table},
+                                      rowsize => $cap_ref->{rowsize},
+                                      filtered => 0,
+                                      sent => 0,
+                                      rowsize => 0,
+                                   );
+                     $sitpure{$isitname} = \%pureref;
+                     $pure_ref = \%pureref;
+                  }
+                  $pure_ref->{filtered} += $cap_ref->{filtered};
+                  $pure_ref->{filtered} += $cap_ref->{filtered};
+                  if ($pure_start == 0) {
+                     $pure_start = $logtime;
+                     $pure_end = $logtime;
+                  } elsif ($logtime < $pure_start) {
+                     $pure_start = $logtime;
+                  } elsif ($logtime > $pure_end) {
+                     $pure_end = $logtime;
+                  }
+               }
+               delete $thrun{$logthread};
+            }
          }
       }
    }
@@ -1225,19 +1382,16 @@ for(;;)
             $sitref->{delayeval} += $sitref->{time_expired} - $sitref->{time_next};
             $sitref->{delaysample} += $sitref->{time_sample} - $sitref->{time_expired} if $sitref->{time_sample} > 0; ;
             $sitref->{delaysend} += $sitref->{time_send} - $sitref->{time_expired} if $sitref->{time_send} > 0;
-#$DB::single=2 if $sitref->{delayeval} < 0;
-#$DB::single=2 if $sitref->{delaysample} < 0;
-#$DB::single=2 if $sitref->{delaysend} < 0;
             $sitref->{time_next} = $inext;
             $sitref->{time_expired} = 0;
             $sitref->{time_sample} = 0;
             $sitref->{time_send} = 0;
          }
+         delete $thrun{$logthread} if defined $thrun{$logthread};
          next;
       }
    }
 
-   next if $skipzero;
    # (53FE31BA.0043-61C:kglhc1c.c,563,"KGLHC1_Command") Entry
    # (53FE31BA.0044-61C:kglhc1c.c,592,"KGLHC1_Command") <0x190B3D18,0x8> Attribute type 0
    # +53FE31BA.0044     00000000   53595341 444D494E                      SYSADMIN
@@ -1341,16 +1495,9 @@ for(;;)
 }
 
 $sit_duration = $sit_end - $sit_start;
+$sit_duration = 1 if $sit_duration == 0;
 $tdur = $trcetime - $trcstime;
-
-if ($sit_duration == 0)  {
-   print STDERR "Results Duration calculation is zero, setting to 1000\n";
-   $dur = 1000;
-}
-if ($tdur == 0)  {
-   print STDERR "Trace Duration calculation is zero, setting to 1000\n";
-   $tdur = 1000;
-}
+$tdur = 1 if $tdur == 0;
 
 my $sittabi = -1;
 my @sittab  = ();
@@ -1509,12 +1656,47 @@ my $sittab_cum_coltime = 0;
 my $respc;
 my $ppc;
 
-$cnt++;$oline[$cnt]="Agent Workload Audit Report by Situation and Table sorted by Collection Time\n";
+my $pure_ct = 0;
+$pure_dur = $pure_end - $pure_start;
+$pure_dur = 1 if $pure_dur == 0;
+$cnt++;$oline[$cnt]="Agent Workload Audit Report by Pure Situation and Table sorted by Filtered Rows\n";
+$cnt++;$oline[$cnt]="\n";
+$cnt++;$oline[$cnt]="Situation,Table,Filtered_Rows,Filt_min,Sendrows,Send_min,Row_Size,Collect_Bytes,Collect_min\n";
+foreach my $f ( sort { $sitpure{$b}->{filtered} <=> $sitpure{$a}->{filtered} or
+                       $a cmp $b
+                     } keys %sitpure ) {
+   next if $f eq "";
+   $pure_ct += 1;
+   $outl = $f . ",";
+   $outl .= $sitpure{$f}->{table} . ",";
+   $outl .= $sitpure{$f}->{filtered} . ",";
+   my $persec = int(($sitpure{$f}->{filtered}*60)/$pure_dur);
+   $outl .= $persec . ",";
+   $outl .= $sitpure{$f}->{sent} . ",";
+   $persec = int(($sitpure{$f}->{sent}*60)/$pure_dur);
+   $outl .= $persec . ",";
+   my $itable = $sitpure{$f}->{table};
+   my $irowsize = $htabsize{$itable};
+   $outl .= $irowsize . ",";
+   my $cbytes = $sitpure{$f}->{filtered} * $irowsize;
+   $outl .= $cbytes . ",";
+   $persec = int(($cbytes*60)/$pure_dur);
+   $outl .= $persec . ",";
+   $cnt++;$oline[$cnt]="$outl\n";
+}
+if ($pure_ct > 0 ) {
+   $cnt++;$oline[$cnt]="*Total," . $pure_dur . ",\n";
+}
+
+$cnt++;$oline[$cnt]="\n";
+$cnt++;$oline[$cnt]="Agent Workload Audit Report by Sampled Situation and Table sorted by Collection Time\n";
 $cnt++;$oline[$cnt]="\n";
 $cnt++;$oline[$cnt]="Situation,Table,Time_Taken,TT%,TT%cum,Instance,Collections,Sendrows,Collect_Rows,Collect_Filter,Collect_Bytes,Row_Size,Delay_Eval,DelaySample,Delay_Send\n";
-foreach my $f ( sort { $sittab_coltime[$sittabx{$b}] <=> $sittab_coltime[$sittabx{$a}] } keys %sittabx ) {
+foreach my $f ( sort { $sittab_coltime[$sittabx{$b}] <=> $sittab_coltime[$sittabx{$a}] or
+                       $a cmp $b
+                     } keys %sittabx ) {
    my $i = $sittabx{$f};
-   next if $sittab_sit[$i] eq "dummysit";
+#  next if $sittab_sit[$i] eq "dummysit";
    $outl = $sittab_sit[$i] . ",";
    $outl .= $sittab_tab[$i] . ",";
    $outl .= $sittab_coltime[$i] . ",";
@@ -1546,15 +1728,18 @@ if ($sittab_total_coltime >= $sit_duration) {
 $outl = "Duration," . $sit_duration . "," . $sittab_total_coltime . ",,,,,,,," . $sittab_total_colbytes . ",,,";
 $cnt++;$oline[$cnt]="$outl\n";
 
+
 my $sittab_cum_colbytes = 0;
 
 $cnt++;$oline[$cnt]="\n";
 $cnt++;$oline[$cnt]="Agent Workload Audit Report by Situation and Table Sorted by Collected Bytes\n";
 $cnt++;$oline[$cnt]="\n";
 $cnt++;$oline[$cnt]="Situation,Table,Time_Taken,Instance,Collections,Sendrows,Collect_Rows,Collect_Filter,Collect_Bytes,CB%,CB%cum,Row_Size,Delay_Eval,DelaySample,Delay_Send\n";
-foreach my $f ( sort { $sittab_colbytes[$sittabx{$b}] <=> $sittab_colbytes[$sittabx{$a}] } keys %sittabx ) {
+foreach my $f ( sort { $sittab_colbytes[$sittabx{$b}] <=> $sittab_colbytes[$sittabx{$a}] or
+                       $a cmp $b
+                     } keys %sittabx ) {
    my $i = $sittabx{$f};
-   next if $sittab_sit[$i] eq "dummysit";
+#  next if $sittab_sit[$i] eq "dummysit";
    $outl = $sittab_sit[$i] . ",";
    $outl .= $sittab_tab[$i] . ",";
    $outl .= $sittab_coltime[$i] . ",";
@@ -2063,3 +2248,4 @@ exit;
 # 0.75000 - if available get situation list and validate running situations
 # 0.76000 - Corrections for z/OS mode
 #           Improve collecting rowsize
+# 0.80000 - Report data on pure situations
