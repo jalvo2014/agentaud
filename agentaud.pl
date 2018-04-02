@@ -10,16 +10,20 @@
 #  Create a report on agent row results from
 #  kpxrpcrq tracing
 #
-#  john alvord, IBM Corporation, 22 Jul 2011
+#  john alvord, IBM Corporation, 22 December 2014
 #  jalvord@us.ibm.com
 #
-# tested on Windows Activestate 5.16.3
+# tested on Windows Activestate 5.20.1
 #
 # $DB::single=2;   # remember debug breakpoint
 
+$gVersion = 0.82000;
+$gWin = (-e "C:/") ? 1 : 0;       # determine Windows versus Linux/Unix for detail settings
+
+## Todos
+
 ## Todos
 #  Handle Agent side historical traces - needs definition and work.
-#  Handle Pure situations
 
 #          Data row is filtered
 # (54931626.0DA9-11:kdsflt1.c,1427,"FLT1_FilterRecord") Entry
@@ -43,8 +47,6 @@
 # (54931625.04D0-3:kraadspt.cpp,889,"sendDataToProxy") Sending 14 rows for UNIX_LAA_Log_Size_Warning KUL.ULMONLOG, <722472833,294650830>.
 # (54931626.0DBD-11:kraadspt.cpp,955,"sendDataToProxy") Exit
 
-$gVersion = 0.81000;
-$gWin = (-e "C:/") ? 1 : 0;       # determine Windows versus Linux/Unix for detail settings
 
 # CPAN packages used
 use Data::Dumper;               # debug
@@ -117,6 +119,7 @@ my $opt_logpat;
 my $opt_logpath;
 my $full_logfn;
 my $opt_v;
+my $opt_vv;
 my $workdel = "";
 my $opt_cmdall;                                  # show all commands
 
@@ -198,6 +201,7 @@ my %htabsize = (
    'KNT.KNTPASMGMT'  => '526',
    'KNT.KNTPASALRT'  => '484',
    'KNT.KNTPASCAP'   => '2998',
+   'KNT.NTMNTPT'     => '624',
    'KNT.MSMQIS'      => '244',
    'KNT.MSMQQUE'     => '424',
    'KNT.MSMQSVC'     => '252',
@@ -297,6 +301,8 @@ my %htabsize = (
    'KLZ.LNXVM'       => '336',
    'KUL.ULLOGENT'    => '2864',
    'KUL.ULMONLOG'    => '1988',
+   'KPX.KPX48WPNET'  => '1328',
+   'KPX.KPX50WPINF'  => '5448',
 );
 
 my %hsitdata;                                # hash of situation name to pure/sampled
@@ -378,6 +384,9 @@ while (@ARGV) {
    } elsif ($ARGV[0] eq "-v") {
       $opt_v = 1;
       shift(@ARGV);
+   } elsif ($ARGV[0] eq "-vv") {
+      $opt_vv = 1;
+      shift(@ARGV);
    } elsif ($ARGV[0] eq "-logpath") {
       shift(@ARGV);
       $opt_logpath = shift(@ARGV);
@@ -399,6 +408,7 @@ if (!defined $opt_nohdr) {$opt_nohdr = 0;}
 if (!defined $opt_objid) {$opt_objid = 0;}
 if (!defined $opt_o) {$opt_o = "agentaud.csv";}
 if (!defined $opt_v) {$opt_v = 0;}
+if (!defined $opt_vv) {$opt_vv = 0;}
 
 if ($gWin == 1) {
    $pwd = `cd`;
@@ -696,7 +706,9 @@ for(;;)
       last;
    }
    $l++;
-#print STDERR "Working on $l\n";
+   if ($l%10000 == 0) {
+      print STDERR "Working on $l\n" if $opt_vv == 1;
+   }
 # following two lines are used to debug errors. First you flood the
 # output with the working on log lines, while merging stdout and stderr
 # with  1>xxx 2>&1. From that you determine what the line number was
@@ -1165,7 +1177,6 @@ for(;;)
                $itable = $1;
                $isitname = "*REALTIME";
             }
-            $isitname = $3;
             $sitref = $sitrun{$iobjid};
             if (!defined $sitref) {
                $sitseq += 1;                               # set new count
@@ -1807,7 +1818,9 @@ if ($acti != -1) {
    $cnt++;$oline[$cnt]="\n";
    $cnt++;$oline[$cnt]="Reflex Command Summary Report\n";
    $cnt++;$oline[$cnt]="Count,Error,Elapsed,Cmd\n";
-   foreach $f ( sort { $act_ct[$actx{$b}] <=> $act_ct[$actx{$a}] } keys %actx ) {
+   foreach $f ( sort { $act_ct[$actx{$b}] <=> $act_ct[$actx{$a}] ||
+                       $act_act[$actx{$b}] cmp $act_act[$actx{$a}] } keys %actx ) {
+
       $i = $actx{$f};
       $outl = $act_ct[$i] . ",";
       $outl .= $act_err[$i] . ",";
@@ -2263,3 +2276,5 @@ exit;
 #           Improve collecting rowsize
 # 0.80000 - Report data on pure situations
 # 0.81000 - Handle ITM 622 level traces
+# 0.82000 - Add two rare KPX tables and KNT.NTMNTPT
+#         - Correct pure event situation calculation
