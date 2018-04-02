@@ -18,12 +18,8 @@
 # $DB::single=2;   # remember debug breakpoint
 
 ## Todos
-## Watch for Override messages
-## Take Action command function for high usage
-## Add location and names of logs analyzed
-## add alert when maximum results exceeds 16meg-8k bytes - likely partial results returned
 
-$gVersion = 0.50000;
+$gVersion = 0.60000;
 
 
 # CPAN packages used
@@ -90,10 +86,8 @@ use Data::Dumper;               # debug only
 # the accumulated data is printed to standard output.
 
 # pick up parameters and process
-#??? make -z option auto-detect
 
 my $opt_z;
-my $opt_expslot;
 my $opt_logpat;
 my $opt_logpath;
 my $opt_workpath;
@@ -102,9 +96,6 @@ my $opt_v;
 my $workdel = "";
 my $opt_inplace = 1;
 my $opt_work    = 0;
-my $opt_nofile = 0;                              # number of file descriptors, zero means not found
-my $opt_stack = 0;                               # Stack limit zero means not found
-my $opt_sr;                                      # Soap Report
 my $opt_cmdall;                                  # show all commands
 
 sub gettime;                             # get time
@@ -116,13 +107,18 @@ my $iobjid;                                  # incoming object id nnnnnnnn,nnnnn
 my $itable;                                  # incoming table
 my $ithread;                                 # incoming thread
 my $itaken;                                  # calculated seconds for sample time
+my $irowsize;                                # size of rows
+my $inext;                                   # time for next evaluation
 my $srows;                                   # number of rows sent
+my $cnt = -1;
+my @oline = ();
 
 my $sitseq = -1;                             # unique sit identifier
 
 my $kx;
 my %sitrun = ();                             # hash of current running situation data
 my %thrun = ();                              # index from thread to current run sit
+my %tabsize = ();                            # record size of attribute table
 my $sitref;
 
 my $histruni = -1;                           # count of history records
@@ -144,14 +140,7 @@ my $opt_nominal_trace     = 1000000;         # trace bytes per minute
 my $opt_nominal_workload  = 50;              # When results high, what sits to show
 #my $opt_nominal_maxresult = 128000;          # Maximum result size
 my $opt_nominal_remotesql = 1200;            # Startup seconds, remote SQL failures during this time may be serious
-my $opt_nominal_soap      = 30;              # SOAP results per minute
-my $opt_nominal_nmr       = 0;               # No Matching Requests value
 my $opt_max_results       = 16*1024*1024 - 8192; # When max results this high, possible truncated results
-my $opt_nominal_listen    = 8;               # warn on high listen count
-my $opt_nominal_nofile    = 8192;            # warn on low nofile value
-my $opt_nominal_stack     = 10240;           # warn on high stack limit value
-my $opt_max_listen        = 16;              # maximum listen count allowed by default
-my $opt_nominal_soap_burst = 300;             # maximum burst of 300 per minute
 
 my $arg_start = join(" ",@ARGV);
 $hdri++;$hdr[$hdri] = "Runtime parameters: $arg_start";
@@ -166,9 +155,6 @@ while (@ARGV) {
    } elsif ($ARGV[0] eq "-b") {
       $opt_b = 1;
       shift(@ARGV);
-   } elsif ($ARGV[0] eq "-sr") {
-      $opt_sr = 1;
-      shift(@ARGV);
    } elsif ($ARGV[0] eq "-cmdall") {
       $opt_cmdall = 1;
       shift(@ARGV);
@@ -181,9 +167,6 @@ while (@ARGV) {
    } elsif ($ARGV[0] eq "-v") {
       $opt_v = 1;
       shift(@ARGV);
-   } elsif ($ARGV[0] eq "-expslot") {
-      shift(@ARGV);
-      $opt_expslot = shift(@ARGV);
    } elsif ($ARGV[0] eq "-logpath") {
       shift(@ARGV);
       $opt_logpath = shift(@ARGV);
@@ -207,10 +190,8 @@ if (!defined $opt_logpath) {$opt_logpath = "";}
 if (!defined $logfn) {$logfn = "";}
 if (!defined $opt_z) {$opt_z = 0;}
 if (!defined $opt_b) {$opt_b = 0;}
-if (!defined $opt_sr) {$opt_sr = 0;}
 if (!defined $opt_cmdall) {$opt_cmdall = 0;}
 if (!defined $opt_v) {$opt_v = 0;}
-if (!defined $opt_expslot) {$opt_expslot = 60;}
 
 $gWin = (-e "C:/") ? 1 : 0;       # determine Windows versus Linux/Unix for detail settings
 
@@ -284,13 +265,6 @@ if (-e $opt_ini) {
       elsif ($words[0] eq "trace") {$opt_nominal_trace = $words[1];}
       elsif ($words[0] eq "workload") {$opt_nominal_workload = $words[1];}
       elsif ($words[0] eq "remotesql") {$opt_nominal_remotesql = $words[1];}
-      elsif ($words[0] eq "soap") {$opt_nominal_soap = $words[1];}
-      elsif ($words[0] eq "soap_burst") {$opt_nominal_soap_burst = $words[1];}
-      elsif ($words[0] eq "nmr") {$opt_nominal_nmr = $words[1];}
-      elsif ($words[0] eq "listen") {$opt_nominal_listen = $words[1];}
-      elsif ($words[0] eq "nofile") {$opt_nominal_nofile = $words[1];}
-      elsif ($words[0] eq "stack") {$opt_nominal_stack = $words[1];}
-      elsif ($words[0] eq "maxlisten") {$opt_max_listen = $words[1];}
       else {
          die "unknown control in temsaud.ini line $l unknown control $words[0]"
       }
@@ -311,6 +285,7 @@ my $segcur = "";
 my $segline;
 my $segmax = "";
 my $skipzero = 0;
+my $key;
 
 my $advisori = -1;
 my @advisor = ();
@@ -351,14 +326,6 @@ if (!defined $logbase) {
    $logbase = $logfn if ! -e $logfn;
 }
 
-
-
-die "-expslot [$opt_expslot] is not numeric" if  $opt_expslot !~ /^\d+$/;
-die "-expslot [$opt_expslot] is not positive number from 1 to 60" if  ($opt_expslot < 1) or ($opt_expslot > 60);
-
-#??? doubt the next line works
-die "-expslot [$opt_expslot] is not an even multiple of 60" if  (int(60/$opt_expslot) * $opt_expslot) != 60;
-
 sub open_kib;
 sub read_kib;
 
@@ -381,7 +348,6 @@ my $irows;                  # number of rows
 my $isize;                  # size of rows
 my $itbl;                   # table name involved
 my $isit;                   # Situation name - may be null
-my $inode;                  # managed system sending data - unused
 my $siti = -1;              # count of situations
 my @sit = ();               # situation name
 my %sitx = ();              # associative array from situation name to index
@@ -406,7 +372,6 @@ my $insize;                 # calculated
 my $csvdata;
 my @words;
 
-my $mani = -1;              # count of managed systems
 my @man = ();               # managed system name
 my %manx = ();              # associative array from managed system name to index
 my @manct = ();             # managed system results count
@@ -418,42 +383,7 @@ my @manrmax = ();           # managed system results maximum of result size
 my @manrmaxsit = ();        # managed system situation giving maximum of result size
 my $mx;                     # index
 
-my $toobigi = -1;           # count of toobig cases
-my @toobigsit = ();         # array of toobig situation names
-my %toobigsitx = ();        # associative array from  situation to index
-my @toobigsize = ();        # size values
-my @toobigtbl = ();         # table name
-my @toobigct = ();          # Count of too bigs
-my $ifiltsize;              # input size
-my $ifilttbl;               # input table
-my $ifiltsit;               # input situation
-my $tx;                     # index
 
-my $syncdist = 0;           # count of sync. dist. error messages
-my $syncdist_first_time;    # First noted time in log
-my $syncdist_timei = -1;    # count of sync. dist. time counts
-my $syncdist_time = ();     # count of sync. dist.
-
-my $soapi = -1;             # count of soap SQLa
-my @soap = ();              # indexed array to SOAP SQLs
-my %soapx = ();             # associative array to SOAP SQLs
-my @soapct;                 # count of soap SQLs
-my @soapip;                 # last ip address seen in header
-my $soapip_lag = "";        # last ip address spotted
-my $soapct_tot;             # total count of SQLs
-
-my $soap_burst_start = 0;   # start of SOAP burst calculation
-my $soap_bursti = -1;       # count of SOAP call minutes
-my @soap_burst = ();        # SOAP calls in each minute
-my $soap_burst_minute;      # current minute from start
-my $soap_burst_count;       # current minute count
-my $soap_burst_max = 0;     # Maximum SOAP count in a minute
-my $soap_burst_max_log = ""; # Maximum SOAP - log segment
-my $soap_burst_max_l = 0;   # Maximum SOAP - log segment line
-my @soap_burst_time = ();   # time being worked on since first one
-my @soap_burst_log = ();    # log being worked on
-my @soap_burst_l = ();      # log line being worked on
-my $soap_burst_next;        # time for begining of next SOAP call minute
 
 my $pti = -1;               # count of process table records
 my @pt  = ();               # pt keys - table_path
@@ -480,13 +410,7 @@ my $ipt_key = "";
 my $ix;
 my $pt_total_total = 0;
 
-my $nmr_total = 0;          # no matching request count
-my $fsync_enabled = 1;      # assume fsync is enabled
 
-my $lp_high = -1;
-my $lp_balance = -1;
-my $lp_threads = -1;
-my $lp_pipes   = -1;
 
 # Summarized action command captures
 my $acti = -1;                               # Action command count
@@ -587,6 +511,7 @@ my @histtime_max_time = ();     # maximum epcoh time
 
 my $histobjecti = -1;           # historical data export hourly, object_yymmddhh
 my @histobject = ();            # key object_yymmddhh
+
 my %histobjectx = ();           # index to object_yymmddhh
 my @histobject_object = ();     # object name
 my @histobject_time = ();       # time
@@ -845,21 +770,36 @@ for(;;)
       }
    }
 
-   # watch for this sequence
+   #  Tracing notes
+   #  error
+   #  (unit:kraafmgr,Entry="Start" all er)
+   #  (unit:kraafira,Entry="DriveDataCollection" all er)
+   #  (unit:kraafira,Entry="~ctira" all er)
+   #  (unit:kraafira,Entry="InsertRow" all er)
+   #  (unit:kdsflt1,Entry="FLT1_FilterRecord" all er)
+   #  (unit:kdsflt1,Entry="FLT1_BeginSample" all er)
+   #  (unit:kraadspt,Entry="sendDataToProxy" all er)
+   #  (unit:kraatblm,Entry="resetExpireTime" all er)
+   #  (unit:kglhc1c all er)
 
-   #   (5421D2F0.0541-D:kraafmgr.cpp,784,"Start") Start received IBM_test_boa <1355809413,0> on *.KLZPROC
-   #   (5421D2F0.0548-D:kraafira.cpp,370,"ctira") Creating request @0x809220f0 <1355809413,1339032522> KLZ.KLZPROC, IBM_test_boa
    #   (5421D2F0.0550-D:kraafmgr.cpp,816,"Start") Start complete IBM_test_boa <1355809413,1339032522> on *.KLZPROC, status = 0
+   #   (5429E381.00C3-1:kraafmgr.cpp,816,"Start") Start complete  <1823474271,2838496211> on *.KLZPROC, status = 0
    next if $skipzero;
    if (substr($logunit,0,12) eq "kraafmgr.cpp") {
       if ($logentry eq "Start") {
          $oneline =~ /^\((\S+)\)(.+)$/;
          $rest = $2;                       # Start complete IBM_test_boa <1355809413,1339032522> on *.KLZPROC, status = 0
          next if substr($rest,1,14) ne "Start complete";
-         $rest =~ / Start complete (\S+) <(.*?)> on (\S+),/;
-         $isitname = $1;
-         $iobjid = $2;
-         $itable = $3;
+         $rest = substr($rest,16);
+         if (substr($rest,0,1) eq " ") {
+            $rest =~ / <(.*?)> on (\S+),/;
+            $isitname = "*REALTIME";
+            $iobjid = $1;
+         } else {
+            $rest =~ /(\S+) <(.*?)> on (\S+),/;
+            $isitname = $1;
+            $iobjid = $2;
+         }
          $ithread = $logthread;
          $sitseq += 1;                               # set new count
          my %sitref =(                                 # anonymous hash for situation instance capture
@@ -867,7 +807,7 @@ for(;;)
                      sitname => $isitname,           # Name of Situation
                      objid => $iobjid,               # stamp - hex time
                      start => $logtime,              # Decimal time start
-                     state => 1,                     # state = 1 means looking Drive Data Collection
+                     state => 1,                     # state = 1 means looking for expired.
                      colcount => 0,                  # number of collection samples
                      colrows => 0,                   # number of rows collected
                      colfilt => 0,                   # number of rows after filter
@@ -876,14 +816,20 @@ for(;;)
                      sendrows => 0,                  # number of rows sent to TEMS
                      sendct => 0,                    # number of times rows sent to TEMS
                      rowsize => 0,                   # size of rows
-                     delayfilter => 0,               # total delay to filter
-                     delaysend => 0,                 # total delay filter to send
                      seq => $sitseq,                 # sequence of new sits
                      exptime => 0,                   # situation expiry time
+                     table => "",                    # attribute table
+                     time_expired => 0,              # seconds when evaluation starts
+                     time_sample => 0,               # seconds when sample started
+                     time_send => 0,                 # seconds when send to TEMS started
+                     time_complete => 0,             # seconds when evaluation process complete
+                     time_next => 0,                 # seconds when evaluation next scheduled
+                     delaysample => 0,               # total delay to sample
+                     delaysend => 0,                 # total delay to send
+                     delayeval => 0,                 # total delay to next evaluation
+
          );
-         $key = $iobjid;
-         $sitrun{$key} = \%sitref;
-       # $thrun{$logthread} = $sitref;
+         $sitrun{$iobjid} = \%sitref;
       }
       next;
    }
@@ -921,24 +867,61 @@ for(;;)
 
    #   (5421D2F0.10BC-F:kraafira.cpp,880,"DriveDataCollection") Entry
    #   (5421D2F0.10BD-F:kraafira.cpp,890,"DriveDataCollection") KLZ.KLZPROC, <1357906681,1339032506> IBM_test_boa_1 expired.
+   #   (5429E381.00DB-8:kraafira.cpp,890,"DriveDataCollection") KLZ.KLZPROC, <1823474271,2838496211>  expired.   *note* no situation name
    #   (54220145.001F-1:kraafira.cpp,404,"~ctira") Deleting request @0x8094fe80 <1357906597,1339032502> KLZ.KLZPROC, IBM_test_boa_1
    if (substr($logunit,0,12) eq "kraafira.cpp") {
       if ($logentry eq "DriveDataCollection") {
          $oneline =~ /^\((\S+)\)(.+)$/;
          $rest = $2;                       # KLZ.KLZPROC, <1357906681,1339032506> IBM_test_boa_1 expired.
          if (substr($rest,-8,8) eq "expired.") {
-            $rest =~ / (\S+), <(.*?)> (\S+) /;
+            $rest =~ / (\S+), <(.*?)> (.+)$/;
+            $itable = $1;
             $iobjid = $2;
             $isitname = $3;
-            $key = $iobjid;
-            $sitref = $sitrun{$key};
-            if (defined $sitref) {
-               if ($sitref->{state} == 1) {
-                  $sitref->{state} = 2;
-                  $sitref->{exptime} = $logtime;
-                  $thrun{$logthread} = $iobjid;
-               }
+            if (substr($isitname,1,8) eq "expired.") {
+               $isitname = "*REALTIME";
+            } else {
+               $isitname =~ /(\S+) /;
+               $isitname = $1;
             }
+            $sitref = $sitrun{$iobjid};
+            if (!defined $sitref) {
+               $sitseq += 1;                               # set new count
+               my %sitref =(                               # anonymous hash for situation instance capture
+                           thread => $logthread,           # Thread id associated with command capture
+                           sitname => $isitname,           # Name of Situation
+                           objid => $iobjid,               # stamp - hex time
+                           start => $logtime,              # Decimal time start
+                           state => 1,                     # state = 1 means looking Drive Data Collection
+                           colcount => 0,                  # number of collection samples
+                           colrows => 0,                   # number of rows collected
+                           colfilt => 0,                   # number of rows after filter
+                           coltime => 0,                   # seconds recorded for collection
+                           colstart => 0,                  # seconds when collection recorded
+                           sendrows => 0,                  # number of rows sent to TEMS
+                           sendct => 0,                    # number of times rows sent to TEMS
+                           rowsize => 0,                   # size of rows
+                           seq => $sitseq,                 # sequence of new sits
+                           exptime => 0,                   # situation expiry time
+                           table => $itable,               # attribute table
+                           time_expired => 0,              # seconds when evaluation starts
+                           time_sample => 0,               # seconds when sample started
+                           time_send => 0,                 # seconds when send to TEMS started
+                           time_complete => 0,             # seconds when evaluation process complete
+                           time_next => 0,                 # seconds when evaluation next scheduled
+                           delaysample => 0,               # total delay to sample
+                           delaysend => 0,                 # total delay to send
+                           delayeval => 0,                 # total delay to next evaluation
+
+               );
+               $sitrun{$iobjid} = \%sitref;
+            }
+            $sitref->{state} = 2;
+            $sitref->{colcount} += 1;
+            $sitref->{exptime} = $logtime;
+            $sitref->{table} = $itable;
+            $sitref->{time_expired} = $logtime;
+            $thrun{$logthread} = $iobjid;
                                            # Exit: 0x0
          } elsif (substr($rest,1,5) eq "Exit:") {
             $iobjid = $thrun{$logthread};
@@ -968,6 +951,75 @@ for(;;)
                delete $sitrun{$iobjid};         # forget run reference
             }
          }
+      } elsif ($logentry eq "ctira") {
+         $oneline =~ /^\((\S+)\)(.+)$/;
+         $rest = $2;                       # Creating request @0x808db1b0 <1825571755,2836399068> KPX.KPXSCHED, NonPrimeShift
+                                           # Creating request @0x8068ab30 <1823474271,2838496211> KLZ.KLZPROC,
+         if (substr($rest,1,8) eq "Creating") {
+            $rest =~ /.*? <(.*?)> (.+)$/;
+            $iobjid = $1;
+            $rest = $2;
+            if (index($rest," ") > -1) {
+               $rest =~ /(\S+), (\S+)$/;
+               $itable = $1;
+               $isitname = $2;
+            } else {
+               $rest =~ /(\S+),$/;
+               $itable = $1;
+               $isitname = "*REALTIME";
+            }
+            $isitname = $3;
+            $sitref = $sitrun{$iobjid};
+            if (!defined $sitref) {
+               $sitseq += 1;                               # set new count
+               my %sitref =(                               # anonymous hash for situation instance capture
+                           thread => $logthread,           # Thread id associated with command capture
+                           sitname => $isitname,           # Name of Situation
+                           objid => $iobjid,               # stamp - hex time
+                           start => $logtime,              # Decimal time start
+                           state => 1,                     # state = 1 means looking Drive Data Collection
+                           colcount => 0,                  # number of collection samples
+                           colrows => 0,                   # number of rows collected
+                           colfilt => 0,                   # number of rows after filter
+                           coltime => 0,                   # seconds recorded for collection
+                           colstart => 0,                  # seconds when collection recorded
+                           sendrows => 0,                  # number of rows sent to TEMS
+                           sendct => 0,                    # number of times rows sent to TEMS
+                           rowsize => 0,                   # size of rows
+                           seq => $sitseq,                 # sequence of new sits
+                           exptime => 0,                   # situation expiry time
+                           table => $itable,               # attribute table
+                           time_expired => 0,              # seconds when evaluation starts
+                           time_sample => 0,               # seconds when sample started
+                           time_send => 0,                 # seconds when send to TEMS started
+                           time_complete => 0,             # seconds when evaluation process complete
+                           time_next => 0,                 # seconds when evaluation next scheduled
+                           delaysample => 0,               # total delay to sample
+                           delaysend => 0,                 # total delay to send
+                           delayeval => 0,                 # total delay to next evaluation
+
+               );
+               $sitrun{$iobjid} = \%sitref;
+            }
+         }
+      } elsif ($logentry eq "InsertRow") {
+         $oneline =~ /^\((\S+)\)(.+)$/;
+         $rest = $2;                       # rowsize = 1540, newsize = 50, newbytes = 77000, _allocated = 0, _allocSize = 50
+         if (substr($rest,1,7) eq "rowsize") {
+            $rest =~ / rowsize = (\d+),/;
+            $irowsize = $1;
+            $iobjid = $thrun{$logthread};
+            if (defined $iobjid) {
+               $sitref = $sitrun{$iobjid};
+               if (defined $sitref) {
+                  if ($sitref->{state} == 2) {
+                     $sitref->{rowsize} = $irowsize;
+                     $itable = $sitref->{table};
+                     $tabsize{$itable} = $irowsize;
+                  }
+               }
+            }
+         }
       }
    }
    # (5422F619.1AA2-F:kdsflt1.c,1464,"FLT1_FilterRecord") Exit: 0x1 or 0x0
@@ -987,8 +1039,22 @@ for(;;)
                 }
              }
          }
-         next;
+      } elsif ($logentry eq "FLT1_BeginSample") {
+         $oneline =~ /^\((\S+)\)(.+)$/;
+         $rest = $2;                       # Exit: 0x0
+         if (substr($rest,1,5) eq "Exit:") {
+            $iobjid = $thrun{$logthread};
+            if (defined $iobjid) {
+               $sitref = $sitrun{$iobjid};
+               if (defined $sitref) {
+                  if ($sitref->{state} == 2) {
+                     $sitref->{time_sample} = $logtime;
+                  }
+               }
+            }
+         }
       }
+      next;
    }
 
    # (5422F619.1C18-F:kraadspt.cpp,889,"sendDataToProxy") Sending 1 rows for IBM_Linux_Process KLZ.KLZPROC, <1374684111,2226127825>.
@@ -996,20 +1062,30 @@ for(;;)
       if ($logentry eq "sendDataToProxy") {
          $oneline =~ /^\((\S+)\)(.+)$/;
          $rest = $2;                       # Sending 1 rows for IBM_Linux_Process KLZ.KLZPROC, <1374684111,2226127825>.
-         if (substr($rest,1,8) eq "Sending") {
-$DB::single=2;
-            $rest =~ / Sending (\d+) rows for (\S+) .*?, <(.*?)>/;
+         if (substr($rest,1,7) eq "Sending") {
+#         print "working on $l\n";
+            $rest =~ / Sending (\d+) rows for (.*?), <(.*?)>/;
             $srows = $1;
-            $isitname = $2;
+#            $isitname = $2;
+#            if (substr($isitname,0,1) eq " ") {
+#$DB::single=2 if $l >= 25324;
+#               $itable = substr($isitname,1);
+#               $isitname = "";
+#            } else {
+#$DB::single=2 if $l >= 25324;;
+#               $isitname =~ /(\S+) (\S+)/;
+#               $isitname = $1;
+#               $itable = $2;
+#           }
             $iobjid = $3;
             $sitref = $sitrun{$iobjid};
             if (defined $sitref) {
-$DB::single=2;
                if ($sitref->{state} == 3) {
-$DB::single=2;
                   $sitref->{state} = 4;
                   $sitref->{sendrows} += $srows;
                   $sitref->{sendct} += 1;
+                  $sitref->{time_send} = $logtime;
+                  $sitref->{time_sample} = $logtime if $sitref->{time_sample} == 0;
                   delete $thrun{$logthread};
                }
             }
@@ -1018,615 +1094,36 @@ $DB::single=2;
       }
    }
 
-
    # (5422F619.1C1D-F:kraatblm.cpp,1040,"resetExpireTime") Situation IBM_Linux_Process <1374684111,2226127825> expired at 1411577369 and will next expire at 1411578269 : timeTaken = 0
    if (substr($logunit,0,12) eq "kraatblm.cpp") {
       if ($logentry eq "resetExpireTime") {
          $oneline =~ /^\((\S+)\)(.+)$/;
          $rest = $2;                       # Situation IBM_test_boa <1362101196,1339032516> expired at 1411502832 and will next expire at 1411502862 : timeTaken = 0
          next if substr($rest,1,9) ne "Situation";
-         $rest =~ / Situation (\S+) <(.*?)> .* timeTaken = (\d+)/;
+         $rest =~ / Situation (\S+) <(.*?)> .*? will next expire at (\d+) .*? timeTaken = (\d+)/;
          $isitname = $1;
          $iobjid = $2;
-         $itaken = $3;
+         $inext = $3;
+         $itaken = $4;
          $ithread = $logthread;
          $sitref = $sitrun{$iobjid};
          if (defined $sitref) {
-            if (($sitref->{state} == 4) or ($sitref->{state} == 3)) {
-               $sitref->{state} = 2;                     # waiting for next DriveDataCollection
-               $sitref->{coltime} += $itaken;            # time in data collection
-               $sitref->{colcount} += 1;                 # count collections
-            }
+            $sitref->{state} = 2;                     # waiting for next DriveDataCollection
+            $sitref->{coltime} += $itaken;            # time in data collection
+            $sitref->{time_next} = $sitref->{time_expired} if $sitref->{time_next} == 0;
+            $sitref->{delayeval} += $sitref->{time_expired} - $sitref->{time_next};
+            $sitref->{delaysample} += $sitref->{time_sample} - $sitref->{time_expired} if $sitref->{time_sample} > 0; ;
+            $sitref->{delaysend} += $sitref->{time_send} - $sitref->{time_expired} if $sitref->{time_send} > 0;
+            $sitref->{time_next} = $inext;
+            $sitref->{time_expired} = 0;
+            $sitref->{time_sample} = 0;
+            $sitref->{time_send} = 0;
          }
          next;
       }
    }
-   next;
 
-   # Following is data transmitting to TEMS Agent Proxy which should sync with above calculation
-   #   (5421D2F0.0FF0-F:kraadspt.cpp,889,"sendDataToProxy") Sending 92 rows for IBM_test_boa_4 KLZ.KLZPROC, <1370489807,1339032510>.
-
-   # After the stop there may is a trailing process which is ignored
-   #   (542201D0.0829-F:kraadspt.cpp,889,"sendDataToProxy") Sending 1 rows for IBM_test_boa_1 KLZ.LNXMACHIN, <1353712302,1339032505>.
-
-
-
-      # Extract the Number of File Descriptors - a Linux/Unix concern.
-      # We documented a recommended setting of 8192 for a TEMS
-      #+527A9859.0000      Fsize Limit: None                      Nofile Limit: 1024
-      #+527A9859.0000 ==========
-   if ($opt_nofile == 0) {
-      if (substr($oneline,0,1) eq "+") {
-          $opt_nofile = -1 if substr($oneline,14,11) eq " ==========";
-          if ($opt_nofile == 0) {
-             my $pi = index($oneline,"Nofile Limit: None");
-             if ($pi != -1) {
-                $opt_nofile = 65536;
-             } else {
-                $pi = index($oneline,"Nofile Limit:");
-                if ($pi != -1) {
-                   ($opt_nofile) = substr($oneline,$pi+13) =~ /(\d+)/;
-                }
-             }
-         }
-      }
-   }
-      # Extract the Stack Limit - a Linux/Unix concern.
-      # We recommend a maximum of 10 megabytes for a TEMS
-      #+52BE1DCC.0000     Nofile Limit: None                       Stack Limit: 32M
-      #+527A9859.0000 ==========
-   if ($opt_stack == 0) {
-      if (substr($oneline,0,1) eq "+") {
-          $opt_stack = -1 if substr($oneline,14,11) eq " ==========";
-          if ($opt_stack == 0) {
-             my $pi = index($oneline,"Stack Limit: None");
-             if ($pi != -1) {
-                $opt_stack = 4*1024*1024;
-             } else {
-                $pi = index($oneline,"Stack Limit:");
-                if ($pi != -1) {
-                   my $in_stack;
-                   ($in_stack) = substr($oneline,$pi+12) =~ /(\w+)/;
-                   my $stack_last_char = substr($in_stack,-1,1);
-                   my $stack_number = substr($in_stack,0,length($in_stack)-1);
-                   $stack_number *= 1024 if $stack_last_char eq 'M';
-                   $opt_stack = $stack_number;
-                }
-             }
-         }
-      }
-   }
-   if (substr($oneline,0,1) ne "(") {next;}
-   $oneline =~ /^(\S+).*$/;          # extract locus part of line
-   $locus = $1;
-   if ($opt_z == 0) {                # distributed has five pieces
-      $locus =~ /\((.*)\.(.*)-(.*):(.*)\,\"(.*)\"\)/;
-      next if index($1,"(") != -1;   # ignore weird case with embedded (
-      $logtime = hex($1);            # decimal epoch
-      $logtimehex = $1;              # hex epoch
-      $logline = $2;                 # line number following hex epoch, meaningful with there are + extended lines
-      $logthread = "T" . $3;         # Thread key
-      $logunit = $4;                 # source unit and line number
-      $logentry = $5;                # function name
-   }
-   else {                            # z/OS has three pieces
-      $locus =~ /\((.*):(.*)\,\"(.*)\"\)/;
-      $logline = 0;      ##???
-      $logthread = "T" . $1;
-      $logunit = $2;
-      $logentry = $3;
-   }
-   if ($skipzero == 0) {
-      if (($segmax <= 1) or ($segp > 0)) {
-         if ($trcstime == 0) {
-            $trcstime = $logtime;
-            $trcetime = $logtime;
-         }
-         if ($logtime < $trcstime) {
-            $trcstime = $logtime;
-         }
-         if ($logtime > $trcetime) {
-            $trcetime = $logtime;
-         }
-      }
-   }
-   # looking for a continuaion of sql line
-   if ($sql_state == 1) {
-      my $sql_frag_line = 1;
-      if (substr($logunit,0,10) ne "kdssqprs.c") {
-         $sql_frag_line = 0;
-         $sql_state = 0;
-      } elsif ($logentry ne "PRS_ParseSql") {
-         $sql_frag_line = 0;
-         $sql_state = 0;
-      } else {
-         $oneline =~ /^\((\S+)\)(.+)$/;
-         $rest = $2;
-         if (substr($rest,1,19) eq "SQL to be parsed is") {
-            $sql_frag_line = 0;
-            $sql_state = 0;
-         }
-      }
-      #(540CE6F4.0047-C:kdssqprs.c,658,"PRS_ParseSql") SELECT TRANSID,GBLTMSTMP,TARGETMSN,CMSNAME,RESERVED2,RETVAL,RETMSGPARM,G
-      if ($sql_frag_line == 1) {
-         $oneline =~ /^\((\S+)\)(.+)$/;
-         $rest = $2;
-         $sql_frag .= substr($rest,1,73);
-         next;
-      }
-      # at this point we have a completed SQL to process
-      $sql_frag =~ s/\s+$//;                    # strip trailing blanks
-      $sx = $sqlx{$sql_frag};
-      if (!defined $sx) {
-         $sqli += 1;
-         $sx = $sqli;
-         $sql[$sx] = $sql_frag;
-         $sqlx{$sql_frag} = $sx;
-         $sql_ct[$sx] = 0;
-      }
-      $sql_ct[$sx] += 1;
-      $sql_state = 0;
-   }
-   $syncdist_first_time = $logtime if !defined $syncdist_first_time;
-   if (substr($logunit,0,12) eq "kpxreqds.cpp") {
-      if ($logentry eq "buildThresholdsFilterObject") {
-         $oneline =~ /^\((\S+)\)(.+)$/;
-         $rest = $2;                       # Filter object too big (39776 + 22968),Table FILEINFO Situation SARM_UX_FileMonitoring2_Warn.
-                                           # Filter object too big (47840 + 10888),Table KLZCPU Situation .
-         next if substr($rest,1,21) ne "Filter object too big";
-         $rest =~ /\((.*)\)\,Table (.*) Situation (.*)\./;
-         $ifiltsize = $1;
-         $ifilttbl = $2;
-         $ifiltsit = $3;
-         if ($ifiltsit eq "") {
-            $ifiltsit = $ifilttbl . "-nosituation";
-         }
-         my $n2 = $toobigsitx{$ifiltsit};
-         if (defined $n2) {
-            $toobigct[$n2] += 1;
-            next;
-         }
-         $toobigi++;
-         $tx = $toobigi;
-         $toobigsit[$tx] = $ifiltsit;
-         $toobigsitx{$ifiltsit} = $tx;
-         $toobigsize[$tx] = $ifiltsize;
-         $toobigtbl[$tx] = $ifilttbl;
-         $toobigct[$tx] = 1;
-      }
-      next;
-   }
-   if (substr($logunit,0,9) eq "kdsrqc1.c") {
-      if ($logentry eq "AccessRowsets") {
-         $oneline =~ /^\((\S+)\)(.+)$/;
-         $rest = $2;                       # Sync. Dist. request A9E5958 Timeout Status ( 155 ) ntype 1 ...
-         next if substr($rest,1,11) ne "Sync. Dist.";
-         $syncdist += 1;
-         $syncdist_timei += 1;
-         $syncdist_time[$syncdist_timei] = $logtime - $syncdist_first_time;
-      }
-      next;
-   }
-   if (substr($logunit,0,9) eq "kdebpli.c") {
-      if ($logentry eq "KDEBP_Listen") {
-         $oneline =~ /^\((\S+)\)(.+)$/;
-         $rest = $2;                       #     listen 16: PLE=11CE1F2B0, hMon=01900C3B, bal=152, thr=2432, pipes=2026
-                                           # 6.3 listenCount 1: PLE=5C4E710, hMon=CE100369, bal=2, thr=2, pipes=0
-
-         next if substr($rest,1,6) ne "listen";
-         $rest =~ /(\d+):.*?=\s*(\d+).*?=\s*(\d+).*?=(\d+).*/;
-         $lp_high = $1;
-         $lp_balance = $2;
-         $lp_threads = $3;
-         $lp_pipes   = $4;
-      }
-      next;
-   }
    next if $skipzero;
-   if (substr($logunit,0,11) eq "kshdhtp.cpp") {
-      if ($logentry eq "getHeaderValue") {
-         $oneline =~ /^\((\S+)\)(.+)$/;
-         $rest = $2;                       # Header is <ip.ssl:#10.41.100.21:38317>
-         next if substr($rest,1,13) ne "Header is <ip";
-         $rest =~ /<(.*?)>/;
-         $soapip_lag = $1;
-      }
-      next;
-   }
-   if (substr($logunit,0,10) eq "kshreq.cpp") {
-      if ($logentry eq "buildSQL") {
-         $histcnt++;
-         $oneline =~ /^\((\S+)\)(.+)$/;
-         $rest = $2;                       # Using pre-built SQL: SELECT NODE, AFFINITIES, PRODUCT, VERSION, RESERVED, O4ONLINE FROM O4SRV.INODESTS
-                                           # Using SQL: SELECT CLCMD,CLCMD2,CREDENTIAL,CWD,KEY,MESSAGE,ACTSECURE,OPTIONS,RESPFILE
-         next if ((substr($rest,1,20) ne "Using pre-built SQL:" ) && (substr($rest,1,10) ne "Using SQL:" ));
-         $rest =~ /: (.*)$/;
-         $isql = $1;
-         $sx = $soapx{$isql};
-         if (!defined $sx) {
-            $soapi++;
-            $soap[$soapi] = $isql;
-            $soapx{$isql} = $soapi;
-            $sx = $soapi;
-         }
-         $soapct[$sx] += 1;
-         $soapct_tot += 1;
-         $soapip[$sx] = $soapip_lag;
-         if ($soap_burst_start == 0) {   # first time recording burst
-             $soap_burst_start = $logtime;
-             $soap_burst_next = $soap_burst_start + 60; # start of next at 60 seconds
-             $soap_burst_minute = 0;
-             if ($opt_sr == 1) {
-                $soap_burst_time[$soap_burst_minute] = 0;
-                $soap_burst_log[$soap_burst_minute] = $segcurr;
-                $soap_burst_l[$soap_burst_minute] = $segline;
-             }
-             $soap_burst_count = 0;
-         }
-         if ($logtime >= $soap_burst_next) {
-             $soap_burst[$soap_burst_minute] = $soap_burst_count;
-             if ($opt_sr == 1) {
-                $soap_burst_time[$soap_burst_minute] = $logtime - $soap_burst_start;
-                $soap_burst_log[$soap_burst_minute] = $segcurr;
-                $soap_burst_l[$soap_burst_minute] = $segline;
-             }
-             if ($soap_burst_max < $soap_burst_count) {
-                $soap_burst_max = $soap_burst_count;
-                $soap_burst_max_log = $segcurr;
-                $soap_burst_max_l = $segline;
-             }
-             $soap_burst_minute += 1;
-             $soap_burst_count = 0;
-             $soap_burst_next += 60;
-             while ($logtime > $soap_burst_next) {
-                $soap_burst[$soap_burst_minute] = $soap_burst_count;
-                if ($opt_sr == 1) {
-                   $soap_burst_time[$soap_burst_minute] = $logtime - $soap_burst_start;
-                   $soap_burst_log[$soap_burst_minute] = $segcurr;
-                   $soap_burst_l[$soap_burst_minute] = $segline;
-                }
-                $soap_burst_next += 60;
-                $soap_burst_minute += 1;
-             }
-         }
-         $soap_burst_count++;
-      }
-      next;
-   }
-
-   #(52051207.0004-42:kdsstc1.c,2097,"ProcessTable") Table Status = 74, Rowcount = 0, TableName = WTMEMORY, Query Type = Select, TablePath = WTMEMORY
-   if (substr($logunit,0,9) eq "kdsstc1.c") {
-      if ($logentry eq "ProcessTable") {
-         $oneline =~ /^\((\S+)\)(.+)$/;
-         $rest = $2;                       # Table Status = 74, Rowcount = 0, TableName = WTMEMORY, Query Type = Select, TablePath = WTMEMORY
-         next if substr($rest,1,14) ne "Table Status =";
-         if ($pt_stime == 0) {
-             $pt_stime = $logtime;
-             $pt_etime = $logtime;
-         }
-         if ($logtime < $pt_stime) {
-            $pt_stime = $logtime;
-         }
-         if ($logtime > $pt_etime) {
-               $pt_etime = $logtime;
-         }
-         $rest =~ /.*?= (\S+)\,.*?=\s+(\S+)\,.*?= (\S+)\,.*?=\s*(.*?)\,.*?=\s*(\S*)/;
-
-         $ipt_status = $1;
-         $ipt_rows = $2;
-         $ipt_table = $3;
-         $ipt_type = $4;
-         $ipt_path  = $5;
-         my $post = index($ipt_type,",");
-         $ipt_type = substr($ipt_type,0,$post) if $post > 0;
-         $ipt_path =~ s/(^\s+|\s+$)//g;
-         $ipt_key = $ipt_table . "_" . $ipt_path;
-         $ix = $ptx{$ipt_key};
-         if (!defined $ix) {
-            $pti += 1;
-            $ix = $pti;
-            $pt[$ix] = $ipt_key;
-            $ptx{$ipt_key} = $ix;
-            $pt_table[$ix] = $ipt_table;
-            $pt_path[$ix] = $ipt_path;
-            $pt_insert_ct[$ix] = 0;
-            $pt_query_ct[$ix] = 0;
-            $pt_select_ct[$ix] = 0;
-            $pt_selectpre_ct[$ix] = 0;
-            $pt_delete_ct[$ix] = 0;
-            $pt_total_ct[$ix] = 0;
-            $pt_error_ct[$ix] = 0;
-            $pt_errors[$ix] = "";
-         }
-         $pt_total_ct[$ix] += 1;
-         $pt_total_total += 1;
-         $pt_insert_ct[$ix] += 1 if $ipt_type eq "Insert";
-         $pt_query_ct[$ix] += 1 if $ipt_type eq "Query";
-         $pt_select_ct[$ix] += 1 if $ipt_type eq "Select";
-         $pt_selectpre_ct[$ix] += 1 if $ipt_type eq "Select PreFiltered";
-         $pt_delete_ct[$ix] += 1 if $ipt_type eq "Delete";
-         if ($ipt_type eq "Insert") {
-           if (($ipt_status != 74) and ($ipt_status != 0) ) {
-              $pt_error_ct[$ix] += 1;
-              $pt_errors[$ix] = $pt_errors[$ix] . " " . $ipt_status if index($pt_errors[$ix],$ipt_status) == -1;
-           }
-         } elsif ($ipt_status != 0) {
-           $pt_error_ct[$ix] += 1;
-           $pt_errors[$ix] = $pt_errors[$ix] . " " . $ipt_status if index($pt_errors[$ix],$ipt_status) == -1;
-         }
-      }
-      next;
-   }
-   if (substr($logunit,0,12) eq "khdxcpub.cpp") {
-       # (50229EBA.0002-A:khdxcpub.cpp,1383,"KHD_ValidateHistoryFile") History file /opt/Tivoli/ITM61/aix533/to/hist/INTERACTN row length is 4152, size is 132232896.
-       if ($logentry eq "KHD_ValidateHistoryFile") {
-          $oneline =~ /^\((\S+)\)(.+)$/;
-          $rest = $2;                       #  History file /opt/Tivoli/ITM61/aix533/to/hist/INTERACTN row length is 4152, size is 132232896
-          if (substr($rest,0,14) eq " History file ") {
-             $rest =~ / History file (\S+) row length is (\d+),/;
-             $table_rowsize{$1} = $2;      # recrod table row size
-          }
-       }
-       next;
-   }
-   if (substr($logunit,0,12) eq "khdxhist.cpp") {
-      # (502122FA.000C-D:khdxhist.cpp,2974,"openMetaFile") Metafile /opt/Tivoli/ITM61/aix533/to/hist/AGGREGATS.hdr opened
-      if ($logentry eq "openMetaFile") {
-         $oneline =~ /^\((\S+)\)(.+)$/;
-         $rest = $2;                       # Metafile /opt/Tivoli/ITM61/aix533/to/hist/AGGREGATS.hdr opened
-         if (substr($rest,1,8) eq "Metafile") {
-            $rest =~ / Metafile (.*?)\.hdr /;
-            $inmetatable = substr($1,rindex($1,"\/")+1);
-         }
-      }
-   }
-   if (substr($logunit,0,12) eq "khdxhist.cpp") {
-      # (502122FA.000E-D:khdxhist.cpp,1382,"open") Starting export at 0000000000000000, row 0 for Aggregates
-      if ($logentry eq "open") {
-         $oneline =~ /^\((\S+)\)(.+)$/;
-         $rest = $2;                       # Starting export at 0000000000000000, row 0 for Aggregates
-         if (substr($rest,1,18) eq "Starting export at") {
-            $rest =~ / row (\d+) for (.*)/;
-            $inmetaobject = $2;
-            if (defined $inmetatable) {
-               $histobjx{$inmetatable} = $inmetaobject if !defined $histobjx{$inmetatable};
-            }
-         }
-      }
-   }
-   if (substr($logunit,0,12) eq "khdxhist.cpp") {
-      # (5022A246.0000-D:khdxhist.cpp,2734,"copyHistoryFile") 34030 read, 6359 skipped, 27671 written from "INTERACTN"
-      if ($logentry eq "copyHistoryFile") {
-         $oneline =~ /^\((\S+)\)(.+)$/;
-         $rest = $2;                       # 34030 read, 6359 skipped, 27671 written from "INTERACTN"
-         if (index($rest,"written from") >= 0) {
-            $rest =~ / (\d+) read, (\d+) skipped, (\d+) written from \"(.*?)\"/;
-            $inreadct  = $1;
-            $inskipct  = $2;
-            $inwritect = $3;
-            $intable   = $4;
-            $inobject = "Object-" . $intable if !defined $histobjx{$intable};
-            $inobject = $histobjx{$intable} if defined $histobjx{$intable};
-            $hx = $histx{$inobject};
-            next if !defined $hx;
-            $hist_cycles[$hx] += 1;
-            if ($hist_cycles[$hx] == 1) {
-               $hist_maxrows[$hx] = $inwritect;
-               $hist_minrows[$hx] = $inwritect;
-            }
-            $hist_maxrows[$hx] = $inwritect if $hist_maxrows[$hx] < $inwritect;
-            $hist_minrows[$hx] = $inwritect if $hist_minrows[$hx] > $inwritect;
-            $hist_totrows[$hx] += $inwritect;
-            $hist_lastrows[$hx] = $inwritect;
-         }
-      }
-   }
-   if (substr($logunit,0,12) eq "khdxhist.cpp") {
-      # (50229B3C.0000-D:khdxhist.cpp,1724,"close") /opt/Tivoli/ITM61/aix533/to/hist/INTERACTN - 1001 rows fetched, 0 skipped
-      if ($logentry eq "close") {
-         undef $inmetatable;
-         $oneline =~ /^\((\S+)\)(.+)$/;
-         $rest = $2;                       # /opt/Tivoli/ITM61/aix533/to/hist/INTERACTN - 1001 rows fetched, 0 skipped
-         if (index($rest," rows ") >= 0) {
-            if (substr($rest,0,1) eq " ") {
-               $rest =~ / (.*?) - (\d+) .* (\d+) skipped/;
-               $inrowsize = $table_rowsize{$1};
-               if ($inrowsize != 0) {
-                  $intable = substr($1,rindex($1,"\/")+1);
-                  $inappl = "Appl-" . $intable;
-                  $inrows = $2-$3;
-                  $inobject = "Object-" . $intable if !defined $histobjx{$intable};
-                  $inobject = $histobjx{$intable} if defined $histobjx{$intable};
-                  $hist_min = (localtime($logtime))[1];
-                  $hist_min = int($hist_min/$opt_expslot) * $opt_expslot;
-                  $hist_min = '00' . $hist_min;
-                  $hist_hour = '00' . (localtime($logtime))[2];
-                  $hist_day  = '00' . (localtime($logtime))[3];
-                  $hist_month = (localtime($logtime))[4] + 1;
-                  $hist_month = '00' . $hist_month;
-                  $hist_year =  (localtime($logtime))[5] + 1900;
-                  $hist_stamp = substr($hist_year,-2,2) . substr($hist_month,-2,2) . substr($hist_day,-2,2) .  substr($hist_hour,-2,2) .  substr($hist_min,-2,2);
-                  if ($hist_min_time == 0) {
-                     $hist_min_time = $logtime;
-                     $hist_max_time = $logtime;
-                  }
-                  $hist_min_time = $logtime if $hist_min_time > $logtime;
-                  $hist_max_time = $logtime if $hist_max_time < $logtime;
-
-                  # first keep stats by object
-                  $key = $inobject;
-                  $hx = $histx{$key};
-                  if (!defined $hx) {
-                     $histi++;
-                     $hx = $histi;
-                     $hist[$hx] = $key;
-                     $histx{$key} = $hx;
-                     $hist_table[$hx] = $intable;
-                     $hist_appl[$hx] = $inappl;
-                     $hist_rows[$hx] = 0;
-                     $hist_rowsize[$hx] = $inrowsize;
-                     $hist_bytes[$hx] = 0;
-                     $hist_maxrows[$hx] = 0;
-                     $hist_minrows[$hx] = 0;
-                     $hist_totrows[$hx] = 0;
-                     $hist_lastrows[$hx] = 0;
-                     $hist_cycles[$hx] = 0;
-                  }
-                  $hist_rows[$hx] += $inrows;
-                  $hist_bytes[$hx] += $inrows * $inrowsize;
-
-                  # next keep stats by time
-                  $key = $hist_stamp;
-                  $hx = $histtimex{$key};
-                  if (!defined $hx) {
-                     $histtimei++;
-                     $hx = $histtimei;
-                     $histtime[$hx] = $key;
-                     $histtimex{$key} = $hx;
-                     $histtime_rows[$hx] = 0;
-                     $histtime_bytes[$hx] = 0;
-                     $histtime_min_time[$hx] = $logtime;
-                     $histtime_max_time[$hx] = $logtime;
-                  }
-                  $histtime_rows[$hx] += $inrows;
-                  $histtime_bytes[$hx] += $inrows * $inrowsize;
-                  $histtime_min_time[$hx] = $logtime if $histtime_min_time[$hx] > $logtime;
-                  $histtime_max_time[$hx] = $logtime if $histtime_max_time[$hx] < $logtime;
-                  # next keep stats by object_time
-                  $key = $inobject . "_" . $hist_stamp;
-                  $hx = $histobjectx{$key};
-                  if (!defined $hx) {
-                     $histobjecti++;
-                     $hx = $histobjecti;
-                     $histobject[$hx] = $key;
-                     $histobjectx{$key} = $hx;
-                     $histobject_object[$hx] = $inobject;
-                     $histobject_table[$hx] = $intable;
-                     $histobject_appl[$hx] = $inappl;
-                     $histobject_time[$hx] = $hist_stamp;
-                     $histobject_rowsize[$hx] = $inrowsize;
-                     $histobject_rows[$hx] = 0;
-                     $histobject_bytes[$hx] = 0;
-                  }
-                  $histobject_rows[$hx] += $inrows;
-                  $histobject_bytes[$hx] += $inrows * $inrowsize;
-               }
-            }
-         }
-      }
-      next;
-   }
-   if (substr($logunit,0,12) eq "khdxdacl.cpp") {
-      # (4E7CB4A4.0026-16A:khdxdacl.cpp,1985,"routeData") Rowsize = 1592, Rows per buffer = 20
-      if ($logentry eq "routeData") {
-         $oneline =~ /^\((\S+)\)(.+)$/;
-         $rest = $2;                       # Rowsize = 1592, Rows per buffer = 20
-         if (substr($rest,1,9) eq "Rowsize =") {
-            $rest =~ /Rowsize = (\d+),/;
-            $inrowsize = $1;
-         }
-      }
-   }
-   if (substr($logunit,0,12) eq "khdxdacl.cpp") {
-      # (4E7CB4A9.0002-16A:khdxdacl.cpp,545,"routeExportRequest") Export request for object KLZ_Process_User_Info table KLZPUSR appl KLZ), 1001 rows, is successful.
-      if ($logentry eq "routeExportRequest") {
-         $oneline =~ /^\((\S+)\)(.+)$/;
-         $rest = $2;                       # Export request for object KLZ_Process_User_Info table KLZPUSR appl KLZ), 1001 rows, is successful.
-         if (substr($rest,1,25) eq "Export request for object") {
-            $inrowsize = 1000 if $inrowsize == 0;
-            if ($inrowsize != 0) {
-               $rest =~ / object (.*?) table (.*?) appl (.*?)\), (\d+) /;
-               $inobject = $1;
-               $intable = $2;
-               $inappl = $3;
-               $inrows = $4;
-               $hist_min = (localtime($logtime))[1];
-               $hist_min = int($hist_min/$opt_expslot) * $opt_expslot;
-               $hist_min = '00' . $hist_min;
-               $hist_hour = '00' . (localtime($logtime))[2];
-               $hist_day  = '00' . (localtime($logtime))[3];
-               $hist_month = (localtime($logtime))[4] + 1;
-               $hist_month = '00' . $hist_month;
-               $hist_year =  (localtime($logtime))[5] + 1900;
-               $hist_stamp = substr($hist_year,-2,2) . substr($hist_month,-2,2) . substr($hist_day,-2,2) .  substr($hist_hour,-2,2) .  substr($hist_min,-2,2);
-               if ($hist_min_time == 0) {
-                  $hist_min_time = $logtime;
-                  $hist_max_time = $logtime;
-               }
-               $hist_min_time = $logtime if $hist_min_time > $logtime;
-               $hist_max_time = $logtime if $hist_max_time < $logtime;
-
-               # first keep stats by object
-               $key = $inobject;
-               $hx = $histx{$key};
-               if (!defined $hx) {
-                  $histi++;
-                  $hx = $histi;
-                  $hist[$hx] = $key;
-                  $histx{$key} = $hx;
-                  $hist_table[$hx] = $intable;
-                  $hist_appl[$hx] = $inappl;
-                  $hist_rows[$hx] = 0;
-                  $hist_rowsize[$hx] = $inrowsize;
-                  $hist_bytes[$hx] = 0;
-                  $hist_maxrows[$hx] = 0;
-                  $hist_minrows[$hx] = 0;
-                  $hist_totrows[$hx] = 0;
-                  $hist_lastrows[$hx] = 0;
-                  $hist_cycles[$hx] = 0;
-               }
-               $hist_rows[$hx] += $inrows;
-               $hist_bytes[$hx] += $inrows * $inrowsize;
-
-               # next keep stats by time
-               $key = $hist_stamp;
-               $hx = $histtimex{$key};
-               if (!defined $hx) {
-                  $histtimei++;
-                  $hx = $histtimei;
-                  $histtime[$hx] = $key;
-                  $histtimex{$key} = $hx;
-                  $histtime_rows[$hx] = 0;
-                  $histtime_bytes[$hx] = 0;
-                  $histtime_min_time[$hx] = $logtime;
-                  $histtime_max_time[$hx] = $logtime;
-               }
-               $histtime_rows[$hx] += $inrows;
-               $histtime_bytes[$hx] += $inrows * $inrowsize;
-               $histtime_min_time[$hx] = $logtime if $histtime_min_time[$hx] > $logtime;
-               $histtime_max_time[$hx] = $logtime if $histtime_max_time[$hx] < $logtime;
-
-               # next keep stats by object_time
-               $key = $inobject . "_" . $hist_stamp;
-               $hx = $histobjectx{$key};
-               if (!defined $hx) {
-                  $histobjecti++;
-                  $hx = $histobjecti;
-                  $histobject[$hx] = $key;
-                  $histobjectx{$key} = $hx;
-                  $histobject_object[$hx] = $inobject;
-                  $histobject_table[$hx] = $intable;
-                  $histobject_appl[$hx] = $inappl;
-                  $histobject_time[$hx] = $hist_stamp;
-                  $histobject_rowsize[$hx] = $inrowsize;
-                  $histobject_rows[$hx] = 0;
-                  $histobject_bytes[$hx] = 0;
-               }
-               $histobject_rows[$hx] += $inrows;
-               $histobject_bytes[$hx] += $inrows * $inrowsize;
-            }
-         }
-      }
-      next;
-   }
-   if (substr($logunit,0,10) eq "kglcbbio.c") {
-      if ($logentry eq "kglcb_getFsyncConfig") {
-         $oneline =~ /^\((\S+)\)(.+)$/;
-         $rest = $2;                       #  fsync() is NOT ENABLED. KGLCB_FSYNC_ENABLED='0'
-         $rest =~ /KGLCB_FSYNC_ENABLED\=\'(\d)\'/;
-         $fsync_enabled = $1 if defined $1;
-      }
-   }
    # (53FE31BA.0043-61C:kglhc1c.c,563,"KGLHC1_Command") Entry
    # (53FE31BA.0044-61C:kglhc1c.c,592,"KGLHC1_Command") <0x190B3D18,0x8> Attribute type 0
    # +53FE31BA.0044     00000000   53595341 444D494E                      SYSADMIN
@@ -1699,7 +1196,6 @@ $DB::single=2;
                   $act_act[$ax] = [];
                }
                $act_elapsed[$ax] += $logtime - $runref->{'start'};
-$DB::single=2;
                $act_ct[$ax] += 1;
                $act_ok[$ax] += 1 if substr($rest,7,3) eq "0x0";
                $act_err[$ax] += 1 if substr($rest,7,3) ne "0x0";
@@ -1729,131 +1225,10 @@ $DB::single=2;
       }
    }
 
-   if (substr($logunit,0,10) eq "kdssqprs.c") {
-      if ($logentry eq "PRS_ParseSql") {
-         $oneline =~ /^\((\S+)\)(.+)$/;
-         $rest = $2;
-         if (substr($rest,1,19) eq "SQL to be parsed is") {
-            $sql_state = 1;
-            $sql_frag = "";
-            if ($sql_start == 0) {
-               $sql_start = $logtime;
-               $sql_end = $logtime;
-            }
-            if ($logtime < $sql_start) {
-               $sql_start = $logtime;
-            }
-            if ($logtime > $sql_end) {
-               $sql_end = $logtime;
-            }
-         }
-      }
-      next;
-   }
-
-   next if substr($logunit,0,12) ne "kpxrpcrq.cpp";
-   next if $logentry ne "IRA_NCS_Sample";
-   $oneline =~ /^\((\S+)\)(.+)$/;
-   $rest = $2;
-      # Sample <665885373,2278557540> arrived with no matching request.
-   if (substr($rest,1,6) eq "Sample") {
-      if (index($rest,"arrived with no matching request.") != -1) {
-         $nmr_total += 1;
-      }
-      next;
-   }
-     # Rcvd 1 rows sz 816 tbl *.UNIXOS req  <418500981,1490027440> node <evoapcprd:KUX>
-   next if substr($rest,1,4) ne 'Rcvd';
-   $rest =~ /(\S+) (\d+) rows sz (\d+) tbl (\S+) req (.*)/;
-   next if $1 ne "Rcvd";
-   $irows = $2;
-   $isize = $3;
-   $itbl = $4;
-   $rest = $5;
-   if (substr($rest,0,2) eq " <") {
-      $isit = "(NULL)" . "-" . $itbl;
-   }
-   else {
-      $rest =~ /(\S+) <(.*)/;
-      $isit = $1;
-      $rest = $2;
-   }
-   $rest =~ /node <(\S+)>/;
-   $inode = $1;
-   $insize = $isize*$irows;
-   if ($sitstime == 0) {
-      $sitstime = $logtime;
-      $sitetime = $logtime;
-   }
-   if ($logtime < $sitstime) {
-      $sitstime = $logtime;
-   }
-   if ($logtime > $sitetime) {
-      $sitetime = $logtime;
-   }
-   if (!defined $sitx{$isit}) {      # if newly observed situation, set up initial values and associative array
-      $siti++;
-      $sit[$siti] = $isit;
-      $sitx{$isit} = $siti;
-      $sx = $siti;
-      $sittbl[$sx] = $itbl;
-      $sitct[$sx] = 0;
-      $sitrows[$sx] = 0;
-      $sitres[$sx] = 0;
-      $sitrmin[$sx] = $insize;
-      $sitrmax[$sx] = $insize;
-      $sitrmaxnode[$sx] = $inode;
-   }
-   else {
-      $sx = $sitx{$isit};
-   }
-   $sitct[$sx] += 1;
-   $sitct_tot  += 1;
-   $sitrows[$sx] += $irows;
-   $sitrows_tot += $irows;
-   if ($insize != 0) {
-      if ($insize < $sitrmin[$sx]) {
-         $sitrmin[$sx] = $insize;
-      }
-   }
-   if ($insize > $sitrmax[$sx]) {
-         $sitrmax[$sx] = $insize;
-         $sitrmaxnode[$sx] = $inode;
-      }
-   $sitres[$sx] += $insize;
-   $sitres_tot  += $insize;
-
-   if ($opt_b == 0) {next if $isit eq "HEARTBEAT";}
-
-   $mx = $manx{$inode};
-   if (!defined $mx) {       # if newly observed node, set up initial values and associative array
-      $mani++;
-      $man[$mani] = $inode;
-      $manx{$inode} = $mani;
-      $mx = $mani;
-      $mantbl[$mx] = $itbl;
-      $manct[$mx] = 0;
-      $manrows[$mx] = 0;
-      $manres[$mx] = 0;
-      $manrmin[$mx] = $insize;
-      $manrmax[$mx] = $insize;
-      $manrmaxsit[$mx] = $isit;
-   }
-   $manct[$mx] += 1;
-   $manrows[$mx] += $irows;
-   if ($insize != 0) {
-      if ($insize < $manrmin[$mx]) {
-         $manrmin[$mx] = $insize;
-      }
-      if ($insize > $manrmax[$mx]) {
-         $manrmax[$mx] = $insize;
-         $manrmaxsit[$mx] = $isit;
-      }
-   }
-   $manres[$mx] += $insize;
 }
-   $dur = $sitetime - $sitstime;
-   $tdur = $trcetime - $trcstime;
+
+$dur = $sitetime - $sitstime;
+$tdur = $trcetime - $trcstime;
 
 if ($dur == 0)  {
    print STDERR "Results Duration calculation is zero, setting to 1000\n";
@@ -1864,49 +1239,225 @@ if ($tdur == 0)  {
    $tdur = 1000;
 }
 
+my $sittabi = -1;
+my @sittab  = ();
+my %sittabx = ();
+my @sittab_sit  = ();
+my @sittab_tab  = ();
+my @sittab_instance  = ();
+my @sittab_sendrows  = ();
+my @sittab_colct  = ();
+my @sittab_colrows  = ();
+my @sittab_colfilt  = ();
+my @sittab_coltime  = ();
+my @sittab_objid = ();
+my @sittab_rowsize = ();
+my @sittab_delayeval = ();
+my @sittab_delaysample = ();
+my @sittab_delaysend = ();
+
+for (my $i=0; $i<=$histruni; $i++) {
+   $sitref = $histrun[$i];
+#  $key = $sitref->{sitname} . "!" . $sitref->{table} . "!" . $sitref->{objid};
+   $key = $sitref->{sitname} . "!" . $sitref->{table};
+   $kx = $sittabx{$key};
+   if (!defined $kx) {
+      $sittabi += 1;
+      $kx = $sittabi;
+      $sittab[$kx] = $key;
+      $sittabx{$key} = $kx;
+      $sittab_sit[$kx] = $sitref->{sitname};
+      $sittab_tab[$kx] = $sitref->{table};
+      $sittab_instance[$kx] = 0;
+      $sittab_sendrows[$kx] = 0;
+      $sittab_colct[$kx] = 0;
+      $sittab_colrows[$kx] = 0;
+      $sittab_colfilt[$kx] = 0;
+      $sittab_coltime[$kx] = 0;
+      $sittab_rowsize[$kx] = 0;
+      $sittab_objid[$kx] = "";
+      $sittab_delayeval[$kx] = 0;
+      $sittab_delaysample[$kx] = 0;
+      $sittab_delaysend[$kx] = 0;
+   }
+   $sittab_instance[$kx] += 1;
+   $sittab_sendrows[$kx] += $sitref->{sendrows};
+   $sittab_colct[$kx] += $sitref->{colcount};
+   $sittab_colrows[$kx] += $sitref->{colrows};
+   $sittab_colfilt[$kx] += $sitref->{colfilt};
+   $sittab_coltime[$kx] += $sitref->{coltime};
+   $sittab_rowsize[$kx] = $sitref->{rowsize} if defined $sitref->{rowsize};
+   $sittab_objid[$kx] .=  "=\"" . $sitref->{objid} . "\"",;
+   $sittab_delayeval[$kx] += $sitref->{delayeval};
+   $sittab_delaysample[$kx] += $sitref->{delaysample};
+   $sittab_delaysend[$kx] += $sitref->{delaysend};
+}
+
+foreach my $f (keys %sitrun) {
+   $sitref = $sitrun{$f};
+   next if $sitref->{state} != 2;
+#  $key = $sitref->{sitname} . "!" . $sitref->{table} . "!" . $sitref->{objid};
+
+   $key = $sitref->{sitname} . "!" . $sitref->{table};
+   $kx = $sittabx{$key};
+   if (!defined $kx) {
+      $sittabi += 1;
+      $kx = $sittabi;
+      $sittab[$kx] = $key;
+      $sittabx{$key} = $kx;
+      $sittab_sit[$kx] = $sitref->{sitname};
+      $sittab_tab[$kx] = $sitref->{table};
+      $sittab_instance[$kx] = 0;
+      $sittab_sendrows[$kx] = 0;
+      $sittab_colct[$kx] = 0;
+      $sittab_colrows[$kx] = 0;
+      $sittab_colfilt[$kx] = 0;
+      $sittab_coltime[$kx] = 0;
+      $sittab_rowsize[$kx] = 0;
+      $sittab_objid[$kx] = "";
+      $sittab_delayeval[$kx] = 0;
+      $sittab_delaysample[$kx] = 0;
+      $sittab_delaysend[$kx] = 0;
+   }
+   $sittab_instance[$kx] += 1;
+   $sittab_sendrows[$kx] += $sitref->{sendrows};
+   $sittab_colct[$kx] += $sitref->{colcount};
+   $sittab_colrows[$kx] += $sitref->{colrows};
+   $sittab_colfilt[$kx] += $sitref->{colfilt};
+   $sittab_coltime[$kx] += $sitref->{coltime};
+   $sittab_rowsize[$kx] = $sitref->{rowsize} if defined $sitref->{rowsize};
+   $sittab_objid[$kx] .=  "=\"" . $sitref->{objid} . "\"",;
+   $sittab_delayeval[$kx] += $sitref->{delayeval};
+   $sittab_delaysample[$kx] += $sitref->{delaysample};
+   $sittab_delaysend[$kx] += $sitref->{delaysend};
+}
+
+#$DB::single=2;
+
+$cnt++;$oline[$cnt]="Agent Workload Audit Report by Situation and Table\n";
+$cnt++;$oline[$cnt]="\n";
+$cnt++;$oline[$cnt]="Situation,Table,Time_Taken,Instance,Collections,Sendrows,Collect_Rows,Collect_Filter,Row_Size,Delay_Eval,DelaySample,Delay_Send\n";
+foreach my $f ( sort { $sittab_coltime[$sittabx{$b}] <=> $sittab_coltime[$sittabx{$a}] } keys %sittabx ) {
+   my $i = $sittabx{$f};
+   $outl = $sittab_sit[$i] . ",";
+   $outl .= $sittab_tab[$i] . ",";
+   $outl .= $sittab_coltime[$i] . ",";
+   $outl .= $sittab_instance[$i] . ",";
+   $outl .= $sittab_colct[$i] . ",";
+   $outl .= $sittab_sendrows[$i] . ",";
+   $outl .= $sittab_colrows[$i] . ",";
+   $outl .= $sittab_colfilt[$i] . ",";
+   $outl .= $sittab_rowsize[$i] . ",";
+   $outl .= $sittab_delayeval[$i] . ",";
+   $outl .= $sittab_delaysample[$i] . ",";
+   $outl .= $sittab_delaysend[$i] . ",";
+   $cnt++;$oline[$cnt]="$outl\n";
+}
+
+#print "\n";
+#print "Agent Workload Audit with Object ID\n";
+#print "Situation,Table,Instance,sendrows,collections,collect_rows,collect_filter,collect_time,\n";
+#for (my $i=0;$i<=$sittabi;$i++) {
+#   my $oline = $sittab_objid[$i] . ",";
+#   $oline .= $sittab_sit[$i] . ",";
+#   $oline .= $sittab_tab[$i] . ",";
+#   $oline .= $sittab_instance[$i] . ",";
+#   $oline .= $sittab_sendrows[$i] . ",";
+#   $oline .= $sittab_colct[$i] . ",";
+#   $oline .= $sittab_colrows[$i] . ",";
+#   $oline .= $sittab_colfilt[$i] . ",";
+#   $oline .= $sittab_coltime[$i] . ",";
+#   print "$oline\n";
+#}
+
+my $act_ct_total = 0;
+my $act_ct_error = 0;
+my $act_elapsed_total = 0;
+my $act_duration;
+
+if ($acti != -1) {
+   $act_duration = $act_end - $act_start;
+   $cnt++;$oline[$cnt]="\n";
+   $cnt++;$oline[$cnt]="Reflex Command Summary Report\n";
+   $cnt++;$oline[$cnt]="Count,Error,Elapsed,Cmd\n";
+   foreach $f ( sort { $act_ct[$actx{$b}] <=> $act_ct[$actx{$a}] } keys %actx ) {
+      $i = $actx{$f};
+      $outl = $act_ct[$i] . ",";
+      $outl .= $act_err[$i] . ",";
+      $outl .= $act_elapsed[$i] . ",";
+      my @cmdarray = @{$act_act[$i]};
+      my $pcommand = $cmdarray[0];
+      $pcommand =~ s/\x09/\\t/g;
+      $pcommand =~ s/\x0A/\\n/g;
+      $pcommand =~ s/\x0D/\\r/g;
+      $pcommand =~ s/\"/\"\"/g;
+      $outl .= "=\"" . $pcommand . "\"";
+      $cnt++;$oline[$cnt]=$outl . "\n";
+      $act_ct_total += $act_ct[$i];
+      $act_ct_error += $act_err[$i];
+      $act_elapsed_total += $act_elapsed[$i];
+
+      if ($opt_cmdall == 1) {
+         if ($#cmdarray > 0) {
+            for (my $c=1;$c<=$#cmdarray;$c++) {
+               $outl = ",,,";
+               $pcommand = $cmdarray[$c];
+               $pcommand =~ s/\x09/\\t/g;
+               $pcommand =~ s/\x0A/\\n/g;
+               $pcommand =~ s/\x0D/\\r/g;
+               $pcommand =~ s/\x00/\\0/g;
+               $pcommand =~ s/\"/\"\"/g;
+               $pcommand =~ s/\'/\'\'/g;
+               $outl .= "=\"" . $pcommand . "\",";
+               $cnt++;$oline[$cnt]=$outl . "\n";
+            }
+         }
+      }
+   }
+   $outl = "duration" . " " . $act_duration . ",";
+   $outl .= $act_elapsed_total . ",";
+   $outl .= $act_ct_total . ",";
+   $outl .= $act_ct_error . ",";
+   $cnt++;$oline[$cnt]=$outl . "\n";
+   if ($#act_max_cmds > 0) {
+      $cnt++;$oline[$cnt]="\n";
+      $outl = "Maximum action command overlay - $act_max";
+      $cnt++;$oline[$cnt]=$outl . "\n";
+      $outl = "Seq,Command";
+      $cnt++;$oline[$cnt]=$outl . "\n";
+      for (my $i = 0; $i <=$#act_max_cmds; $i++) {
+         $runref = $act_max_cmds[$i];
+         $outl = "$i,$runref->{cmd},";
+         $cnt++;$oline[$cnt]=$outl . "\n";
+      }
+   }
+}
+
+$DB::single=2;
+
+for (my $i=0;$i<=$cnt;$i++) {
+   print $oline[$i];
+}
+
+exit 0;
 
 # produce output report
-my @oline = ();
 
-my $cnt = -1;
+$cnt++;$oline[$cnt]="Summary Statistics\n";
+$cnt++;$oline[$cnt]="Duration (seconds),,,$dur\n";
+$cnt++;$oline[$cnt]="\n";
 
-if ($toobigi != -1) {
-   $cnt++;$oline[$cnt]="Too Big Report\n";
-   $cnt++;$oline[$cnt]="Situation,Table,FilterSize,Count\n";
-   for ($i = 0; $i <= $toobigi; $i++) {
-      $outl = $toobigsit[$i] . ",";
-      $outl .= $toobigtbl[$i] . ",";
-      $outl .= $toobigsize[$i] . ",";
-      $outl .= $toobigct[$i] . ",";
-      $cnt++;$oline[$cnt]=$outl . "\n";
-   }
-   $cnt++;$oline[$cnt]="\n";
-}
-if ($toobigi > -1) {
-      my $ptoobigi = $toobigi + 1;
-      $advisori++;$advisor[$advisori] = "Advisory: $ptoobigi Filter object too big situations and/or reports\n";
-   }
-if ($lp_high > $opt_nominal_listen) {
-   if ($lp_high >= $opt_max_listen) {
-      $advisori++;$advisor[$advisori] = "Advisory: Listen Pipe Shortage at maximum - emergency!!\n";
-   }
-   $advisori++;$advisor[$advisori] = "Advisory: Listen Pipe above nominal[$opt_nominal_listen] listen=$lp_high balance=$lp_balance threads=$lp_threads pipes=$lp_pipes\n";
-}
-if ($opt_nofile > 0) {
-   if ($opt_nofile < $opt_nominal_nofile) {
-      $advisori++;$advisor[$advisori] = "Advisory: ulimit nofile [$opt_nofile] is below nominal [$opt_nominal_nofile]\n";
-   }
-}
-if ($opt_stack > 0) {
-   if ($opt_stack > $opt_nominal_stack) {
-      $advisori++;$advisor[$advisori] = "Advisory: ulimit stack [$opt_stack] is above nominal [$opt_nominal_stack] (kbytes)\n";
-   }
-}
+
+
+
+$cnt++;$oline[$cnt]="Situation Agent Workload Report\n";
+$cnt++;$oline[$cnt]="Situation,Table,Count,Rows,ResultBytes,Result/Min,Fraction,Cumulative%,MinResults,MaxResults,MaxNode\n";
+
+
 
 
 my $res_pc = 0;
 my $trc_pc = 0;
-my $soap_pc = 0;
 my $res_max = 0;
 
 $cnt++;$oline[$cnt]="Summary Statistics\n";
@@ -1935,34 +1486,7 @@ if ($trace_size_minute > $opt_nominal_trace) {
    my $ppc = sprintf '%.0f%%', $trc_pc;
    $advisori++;$advisor[$advisori] = "Advisory: Trace bytes per minute $ppc higher then nominal $opt_nominal_trace\n";
 }
-my $syncdist_early = -1;
-if ($syncdist > 0) {
-   my $synctime_print = join("/",@syncdist_time);
-   $cnt++;$oline[$cnt]="Remote SQL time outs,,,$syncdist,$synctime_print\n";
-   $cnt++;$oline[$cnt]="\n";
-   for (my $i = 0; $i >= $syncdist; $i++) {
-      $syncdist_early += 1 if $syncdist_time[$i] < $opt_nominal_remotesql;
-   }
-}
 
-if ($syncdist_early > -1) {
-      $advisori++;$advisor[$advisori] = "Advisory: $syncdist_early early remote SQL failures\n";
-   }
-
-if ($fsync_enabled == 0) {
-      $advisori++;$advisor[$advisori] = "Advisory: KGLCB_FSYNC_ENABLED set to 0 - risky for TEMS database files\n";
-   }
-
-if ($lp_high != -1) {
-   $cnt++;$oline[$cnt] = "Listen Pipe Report listen=$lp_high balance=$lp_balance threads=$lp_threads pipes=$lp_pipes\n";
-   $cnt++;$oline[$cnt]="\n";
-}
-
-if ($nmr_total > 0) {
-   $cnt++;$oline[$cnt]="Sample No Matching Request count,,,$nmr_total,\n";
-   $cnt++;$oline[$cnt]="\n";
-   $advisori++;$advisor[$advisori] = "Advisory: $nmr_total \"No Matching Request\" samples\n";
-}
 
 my $f;
 my $crespermin = 0;
@@ -2032,69 +1556,6 @@ $respermin = int($sitres_tot / ($dur / 60));
 $outl .= $respermin;
 $cnt++;$oline[$cnt]=$outl . "\n";
 
-my $act_ct_total = 0;
-my $act_ct_error = 0;
-my $act_elapsed_total = 0;
-my $act_duration;
-
-if ($acti != -1) {
-   $act_duration = $act_end - $act_start;
-   $cnt++;$oline[$cnt]="\n";
-   $cnt++;$oline[$cnt]="Reflex Command Summary Report\n";
-   $cnt++;$oline[$cnt]="Count,Error,Elapsed,Cmd\n";
-   foreach $f ( sort { $act_ct[$actx{$b}] <=> $act_ct[$actx{$a}] } keys %actx ) {
-      $i = $actx{$f};
-      $outl = $act_ct[$i] . ",";
-      $outl .= $act_err[$i] . ",";
-      $outl .= $act_elapsed[$i] . ",";
-      my @cmdarray = @{$act_act[$i]};
-      my $pcommand = $cmdarray[0];
-      $pcommand =~ s/\x09/\\t/g;
-      $pcommand =~ s/\x0A/\\n/g;
-      $pcommand =~ s/\x0D/\\r/g;
-      $pcommand =~ s/\"/\"\"/g;
-      $outl .= "=\"" . $pcommand . "\"";
-      $cnt++;$oline[$cnt]=$outl . "\n";
-      $act_ct_total += $act_ct[$i];
-      $act_ct_error += $act_err[$i];
-      $act_elapsed_total += $act_elapsed[$i];
-
-      if ($opt_cmdall == 1) {
-         if ($#cmdarray > 0) {
-            for (my $c=1;$c<=$#cmdarray;$c++) {
-               $outl = ",,,";
-               $pcommand = $cmdarray[$c];
-               $pcommand =~ s/\x09/\\t/g;
-               $pcommand =~ s/\x0A/\\n/g;
-               $pcommand =~ s/\x0D/\\r/g;
-               $pcommand =~ s/\x00/\\0/g;
-               $pcommand =~ s/\"/\"\"/g;
-               $pcommand =~ s/\'/\'\'/g;
-               $outl .= "=\"" . $pcommand . "\",";
-               $cnt++;$oline[$cnt]=$outl . "\n";
-            }
-         }
-      }
-   }
-   $outl = "duration" . " " . $act_duration . ",";
-   $outl .= $act_elapsed_total . ",";
-   $outl .= $act_ct_total . ",";
-   $outl .= $act_ct_error . ",";
-   $cnt++;$oline[$cnt]=$outl . "\n";
-   if ($#act_max_cmds > 0) {
-      $cnt++;$oline[$cnt]="\n";
-      $outl = "Maximum action command overlay - $act_max";
-      $cnt++;$oline[$cnt]=$outl . "\n";
-      $outl = "Seq,Command";
-      $cnt++;$oline[$cnt]=$outl . "\n";
-      for (my $i = 0; $i <=$#act_max_cmds; $i++) {
-         $runref = $act_max_cmds[$i];
-         $outl = "$i,$runref->{cmd},";
-         $cnt++;$oline[$cnt]=$outl . "\n";
-      }
-   }
-}
-
 my $sqlt_duration;
 
 if ($sqli != -1) {
@@ -2114,34 +1575,6 @@ if ($sqli != -1) {
    $cnt++;$oline[$cnt]=$outl . "\n";
 }
 
-if ($soapi != -1) {
-   $cnt++;$oline[$cnt]="\n";
-   $cnt++;$oline[$cnt]="SOAP SQL Summary Report\n";
-   $cnt++;$oline[$cnt]="IP,Count,SQL\n";
-   foreach $f ( sort { $soapct[$soapx{$b}] <=> $soapct[$soapx{$a}] } keys %soapx ) {
-      $i = $soapx{$f};
-      $outl = $soapip[$i] . ",";
-      $outl .= $soapct[$i] . ",";
-      $csvdata = $soap[$i];
-      $csvdata =~ s/\"/\"\"/g;
-      $outl .= "\"" . $csvdata . "\"";
-      $cnt++;$oline[$cnt]=$outl . "\n";
-   }
-   $outl = "*total" . ",";
-   $outl .= $soapct_tot . ",";
-   $cnt++;$oline[$cnt]=$outl . "\n";
-   my $soap_rate = $soapct_tot / ($dur / 60);
-   if ($soap_rate > $opt_nominal_soap) {
-      $soap_pc = int((($soap_rate - $opt_nominal_soap)*100)/$opt_nominal_soap);
-      my $ppc = sprintf '%.0f%%', $soap_pc;
-      $advisori++;$advisor[$advisori] = "Advisory: SOAP requests per minute $ppc higher then nominal $opt_nominal_soap\n";
-   }
-   if ($soap_burst_max > $opt_nominal_soap_burst) {
-      $soap_pc = int((($soap_burst_max - $opt_nominal_soap_burst)*100)/$opt_nominal_soap_burst);
-      my $ppc = sprintf '%.0f%%', $soap_pc;
-      $advisori++;$advisor[$advisori] = "\"Advisory: SOAP Burst requests per minute $ppc higher then nominal $opt_nominal_soap_burst at line $soap_burst_max_l in $soap_burst_max_log\"\n";
-   }
-}
 if ($pti != -1) {
    $pt_dur = $pt_etime - $pt_stime;
    $cnt++;$oline[$cnt]="\n";
@@ -2269,26 +1702,6 @@ print "\n";
 for (my $i = 0; $i<=$cnt; $i++) {
    print $oline[$i];
 }
-if ($opt_sr == 1) {
-   if ($soap_burst_minute != -1) {
-      my $opt_sr_fn = "soap_detail.txt";
-      open SOAP, ">$opt_sr_fn" or die "Unable to open SOAP Detail output file $opt_sr_fn\n";
-      select SOAP;              # print will use SOAP instead of STDOUT
-      print "Secs   Count Line   Log-segment\n";
-      for (my $i=0;$i<=$soap_burst_minute;$i++) {
-         next if !defined $soap_burst_log[$i];
-         next if $soap_burst[$i] == 0;
-         my $oline =  "";
-         $oline .= sprintf("%6d",$soap_burst_time[$i]) . " ";
-         $oline .= sprintf("%5d",$soap_burst[$i]) . " ";
-         $oline .= sprintf("%7d",$soap_burst_l[$i]) . " ";
-         $oline .= sprintf("%s",$soap_burst_log[$i]);
-         print "$oline\n";
-      }
-      close SOAP;
-   }
-}
-
 print STDERR "Wrote $cnt lines\n";
 
 # all done
@@ -2435,7 +1848,6 @@ sub GiveHelp
     -h              display help information
     -z              z/OS RKLVLOG log
     -b              Show HEARTBEATs in Managed System section
-    -expslot <mins> Historical export report slot size - default 60 mins
     -v              Produce limited progress messages in STDERR
     -inplace        [default and not used - see work parameter]
     -logpath        Directory path to TEMS logs - default current directory
@@ -2450,37 +1862,5 @@ EndOFHelp
 exit;
 }
 #------------------------------------------------------------------------------
-# 0.50000 - initial development
-# 0.60000 - too big report first, add managed system report
-# 0.70000 - convert RKLVLOG time stamps to Unix epoch seconds
-# 0.75000 - sort reports by number of ResultBytes column in descending order ,
-#         - add SOAP SQL report if trace entries present
-# 0.80000 - add logic for historical data export
-# 0.90000 - add -b option to break out HEARTBEAT sources
-#           add processing of agent export traces
-# 0.95000 - add move summary to top and add per cent column
-# 0.99000 - calculate the correct log segments
-# 1.00000 - Optional work directory when handling log segments
-# 1.01000 - erase work directory files when finished
-# 1.05000 - count trace lines and size per minute
-#         - inplace added, capture too big cases in hands off mode
-#         - Add count of remote SQL time out messages
-#         - Handle isolated historical data lines better
-# 1.06000 - Add -work option and default inplace to ON
-# 1.10000 - Add Advisory section
-#           Fix hands off logic with Windows logs
-#         - Add 16meg truncated result advisory
-# 1.15000 - Summary Dataserver ProcessTable trace
-#         - Add check for listen pipe shortage
-# 1.16000 - fix broken -z option
-# 1.17000 - more -z fixes and truncated result advisory
-# 1.18000 - add counts of No Matching Requests
-# 1.19000 - add advisory for Nofile less then 8192
-# 1.20000 - add advisory for Stack more then 10M
-# 1.21000 - handle listen messages at ITM 630
-#         - add SOAP Burst calculation and advisory
-# 1.22000 - add -sr == soapreport
-# 1.23000 - handle z/OS better, especially for ProcessTable capture
-# 1.24000 - count action commands
-#         - Advisory when KGLCB_FSYNC_ENABLED=0
 # 0.50000 - new script based on temsaud.pl version 1.25000
+# 0.60000 - extend logic and remove temsaud specific logic
