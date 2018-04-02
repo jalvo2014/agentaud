@@ -17,7 +17,7 @@
 #
 # $DB::single=2;   # remember debug breakpoint
 
-$gVersion = 0.83000;
+$gVersion = 0.84000;
 $gWin = (-e "C:/") ? 1 : 0;       # determine Windows versus Linux/Unix for detail settings
 
 ## Todos
@@ -124,11 +124,7 @@ my $workdel = "";
 my $opt_cmdall;                                  # show all commands
 
 sub gettime;                             # get time
-sub init_txt;                            # input from txt file
-sub init_lst;                            # input from lst file
 sub getstamp;                            # convert epoch into slot stamp
-
-%sitnamex = ();
 
 
 # following hashtable is a backup for calculating table lengths.
@@ -308,6 +304,11 @@ my %htabsize = (
 
 my %hsitdata;                                # hash of situation name to pure/sampled
 
+my %flowtems;                                # track flow of Agent to TEMS
+my $flowkey;                                 # usually timestamp of start
+my $flow_ref;                                #
+my %flowrate;                                # accumulate flow rates by second
+
 
 my $sit_start = 0;                           # first expired time
 my $sit_end = 0;                             # last expired time
@@ -356,6 +357,7 @@ $hdri++;$hdr[$hdri] = "Start: $audit_start_time";
 my $opt_nohdr;                               # when 1 no headers printed
 my $opt_objid;                               # when 1 print object id
 my $opt_o;                                   # when defined filename of report file
+my $opt_tsit;                                # when defined debug testing sit
 my $opt_slot;                                # when defined specify history slots, default 60 minutes
 
 my $arg_start = join(" ",@ARGV);
@@ -377,6 +379,10 @@ while (@ARGV) {
    } elsif ($ARGV[0] eq "-objid") {
       $opt_objid = 1;
       shift(@ARGV);
+   } elsif ($ARGV[0] eq "-tsit") {
+      shift(@ARGV);
+      $opt_tsit = shift(@ARGV);
+      die "Option -tsit with no test situation set" if !defined $opt_tsit;
    } elsif ($ARGV[0] eq "-o") {
       shift(@ARGV);
       if (defined $ARGV[0]) {
@@ -421,6 +427,7 @@ if (!defined $opt_z) {$opt_z = 0;}
 if (!defined $opt_cmdall) {$opt_cmdall = 0;}
 if (!defined $opt_nohdr) {$opt_nohdr = 0;}
 if (!defined $opt_objid) {$opt_objid = 0;}
+if (!defined $opt_tsit) {$opt_tsit = "";}
 if (!defined $opt_o) {$opt_o = "agentaud.csv";}
 if (!defined $opt_slot) {$opt_slot = 60;}
 if (!defined $opt_v) {$opt_v = 0;}
@@ -514,16 +521,6 @@ sub open_kib;
 sub read_kib;
 
 my $pos;
-
-my $opt_txt_tsitdesc = 'QA1CSITF.DB.TXT';
-my $opt_lst_tsitdesc = 'QA1CSITF.DB.LST';
-
-if (-e $opt_txt_tsitdesc) {
-   $rc = init_txt();
-} elsif (-e $opt_lst_tsitdesc) {
-   $rc = init_lst();
-}
-
 
 open_kib();
 
@@ -960,6 +957,7 @@ for(;;)
          next if substr($rest,1,19) ne "*EV-INFO: Exception";
          $rest =~ /^.*Situation (\S+) \S+ (\S+) Type<(\d)> Interval<(\d+)> rowSize<(\d+)> /;
          $isitname = $1;
+         $DB::single=2 if $opt_tsit eq $isitname;
          $itable = $2;
          $isittype = $3;
          $irowsize = $5;
@@ -997,11 +995,12 @@ for(;;)
          } else {
             $rest =~ /(\S+) <(.*?)> on (\S+),/;
             $isitname = $1;
+            $DB::single=2 if $opt_tsit eq $isitname;
             $iobjid = $2;
          }
          $ithread = $logthread;
          $sitseq += 1;                               # set new count
-         my %sitref =(                                 # anonymous hash for situation instance capture
+         my %sitref =(                               # anonymous hash for situation instance capture
                      thread => $logthread,           # Thread id associated with command capture
                      sitname => $isitname,           # Name of Situation
                      objid => $iobjid,               # stamp - hex time
@@ -1013,6 +1012,7 @@ for(;;)
                      coltime => 0,                   # seconds recorded for collection
                      colstart => 0,                  # seconds when collection recorded
                      sendrows => 0,                  # number of rows sent to TEMS
+                     sendtime => 0,                  # seconds when rows sent to TEMS
                      sendct => 0,                    # number of times rows sent to TEMS
                      rowsize => 0,                   # size of rows
                      seq => $sitseq,                 # sequence of new sits
@@ -1020,7 +1020,9 @@ for(;;)
                      table => "",                    # attribute table
                      time_expired => 0,              # seconds when evaluation starts
                      time_sample => 0,               # seconds when sample started
+                     time_sample_exit => 0,          # seconds when sample finished
                      time_send => 0,                 # seconds when send to TEMS started
+                     time_send_exit => 0,            # seconds when send to TEMS finished
                      time_complete => 0,             # seconds when evaluation process complete
                      time_next => 0,                 # seconds when evaluation next scheduled
                      delaysample => 0,               # total delay to sample
@@ -1036,6 +1038,7 @@ for(;;)
                my %slotref = (
                                 instance => 0,
                                 sendrows => 0,                  # number of rows sent to TEMS
+                                sendtime => 0,                  # seconds recorded for rows sent to TEMS
                                 sendct => 0,                    # number of times rows sent to TEMS
                                 coltime => 0,
                                 delayeval => 0,
@@ -1091,7 +1094,6 @@ for(;;)
    #   (5421D2F0.10BD-F:kraafira.cpp,890,"DriveDataCollection") KLZ.KLZPROC, <1357906681,1339032506> IBM_test_boa_1 expired.
    #   (5429E381.00DB-8:kraafira.cpp,890,"DriveDataCollection") KLZ.KLZPROC, <1823474271,2838496211>  expired.   *note* no situation name
    #   (54220145.001F-1:kraafira.cpp,404,"~ctira") Deleting request @0x8094fe80 <1357906597,1339032502> KLZ.KLZPROC, IBM_test_boa_1
-#$DB::single=2 if $l >= 36813;
 
 
    if (substr($logunit,0,12) eq "kraafira.cpp") {
@@ -1108,6 +1110,7 @@ for(;;)
             } else {
                $isitname =~ /(\S+) /;
                $isitname = $1;
+               $DB::single=2 if $opt_tsit eq $isitname;
             }
             if ($sit_start == 0) {
                $sit_start = $logtime;
@@ -1122,7 +1125,7 @@ for(;;)
             $sitref = $sitrun{$iobjid};
             if (!defined $sitref) {
                $sitseq += 1;                               # set new count
-               my %sit_ref = (                             # anonymous hash for situation instance capture
+               my %sitref = (                              # anonymous hash for situation instance capture
                            thread => $logthread,           # Thread id associated with command capture
                            sitname => $isitname,           # Name of Situation
                            objid => $iobjid,               # stamp - hex time
@@ -1134,6 +1137,7 @@ for(;;)
                            coltime => 0,                   # seconds recorded for collection
                            colstart => 0,                  # seconds when collection recorded
                            sendrows => 0,                  # number of rows sent to TEMS
+                           sendtime => 0,                  # seconds when rows sent to TEMS
                            sendct => 0,                    # number of times rows sent to TEMS
                            rowsize => 0,                   # size of rows
                            seq => $sitseq,                 # sequence of new sits
@@ -1141,16 +1145,18 @@ for(;;)
                            table => $itable,               # attribute table
                            time_expired => 0,              # seconds when evaluation starts
                            time_sample => 0,               # seconds when sample started
+                           time_sample_exit => 0,          # seconds when sample finished
                            time_send => 0,                 # seconds when send to TEMS started
+                           time_send_exit => 0,            # seconds when send to TEMS finished
                            time_complete => 0,             # seconds when evaluation process complete
                            time_next => 0,                 # seconds when evaluation next scheduled
                            delaysample => 0,               # total delay to sample
                            delaysend => 0,                 # total delay to send
                            delayeval => 0,                 # total delay to next evaluation
-
+                           slots => {},                    # hold details when wanted
                );
-               $sitrun{$iobjid} = \%sit_ref;
-               $sitref = \%sit_ref;
+               $sitrun{$iobjid} = \%sitref;
+               $sitref = \%sitref;
             }
             if (defined $sit_details{$isitname}) {
                my $slot = getstamp($logtime);
@@ -1181,6 +1187,9 @@ for(;;)
             $sitref->{table} = $itable;
             $sitref->{time_expired} = $logtime;
             $sitref->{time_sample} = 0;
+            $sitref->{time_sample_exit} = 0;
+            $sitref->{time_send} = 0;
+            $sitref->{time_send_exit} = 0;
             my %capref = (type => 1,                      # sampled capture = 1
                           state => 0,                     # track between capture records
                           objid => $iobjid,               # object id
@@ -1188,6 +1197,7 @@ for(;;)
                           filtered => 0,                  # number of rows filtered
                           sent => 0,                      # number of rows sent
                           table => "",                    # related table
+                          time_send => 0,                 # time send to TEMS starts
                 );
             $thrun{$logthread} = \%capref;                # Associate capture record with thread number
          } elsif (substr($rest,1,5) eq "Exit:") {
@@ -1197,7 +1207,7 @@ for(;;)
                   $iobjid = $cap_ref->{objid};
                   $sitref = $sitrun{$iobjid};
                   if (defined $sitref) {
-                     if ($sitref->{state} == 2) {
+                     if ($sitref->{state} == 2) {         # end of DriveDataCollection
                         $sitref->{state} = 3;
                      }
                   }
@@ -1214,6 +1224,7 @@ for(;;)
             $iobjid = $1;
             $itable = $2;
             $isitname = $3;
+            $DB::single=2 if $opt_tsit eq $isitname;
             $sitref = $sitrun{$iobjid};
             if (defined $sitref) {
                $histruni += 1;
@@ -1234,6 +1245,7 @@ for(;;)
                $rest =~ /(\S+), (\S+)$/;
                $itable = $1;
                $isitname = $2;
+               $DB::single=2 if $opt_tsit eq $isitname;
             } else {
                $rest =~ /(\S+),$/;
                $itable = $1;
@@ -1254,6 +1266,7 @@ for(;;)
                            coltime => 0,                   # seconds recorded for collection
                            colstart => 0,                  # seconds when collection recorded
                            sendrows => 0,                  # number of rows sent to TEMS
+                           sendtime => 0,                  # seconds when rows sent to TEMS
                            sendct => 0,                    # number of times rows sent to TEMS
                            rowsize => 0,                   # size of rows
                            seq => $sitseq,                 # sequence of new sits
@@ -1261,14 +1274,15 @@ for(;;)
                            table => $itable,               # attribute table
                            time_expired => 0,              # seconds when evaluation starts
                            time_sample => 0,               # seconds when sample started
+                           time_sample_exit => 0,          # seconds when sample finished
                            time_send => 0,                 # seconds when send to TEMS started
+                           time_send_exit => 0,            # seconds when send to TEMS finished
                            time_complete => 0,             # seconds when evaluation process complete
                            time_next => 0,                 # seconds when evaluation next scheduled
                            delaysample => 0,               # total delay to sample
                            delaysend => 0,                 # total delay to send
                            delayeval => 0,                 # total delay to next evaluation
                            slots => {},                    # hold details when wanted
-
                );
                $sitrun{$iobjid} = \%sitref;
             }
@@ -1292,10 +1306,8 @@ for(;;)
                                 );
                   $sitref->{slots}{$slot} = \%slotref;
                   $slot_ref = \%slotref;
-#my $x = 1;
                }
                $slot_ref->{instance} += 1;
-#my $x = 1;
             }
          }
       } elsif ($logentry eq "InsertRow") {
@@ -1343,7 +1355,6 @@ for(;;)
                      if ($sitref->{state} == 2) {
                         $sitref->{colrows} += 1;
                         $sitref->{colfilt} += 1 if substr($rest,7,3) eq "0x0";
-                        $sitref->{time_sample} = $logtime if  $sitref->{time_sample} == 0;
                      }
                      if (defined $sit_details{$sitref->{sitname}}) {
                         my $slot = getstamp($sitref->{exptime});
@@ -1356,7 +1367,6 @@ for(;;)
             # if no capture record, this is the first record of a pure situation record evaluation
             # the situation name arrives later but we need to record the filter success or failure now
             } else {
-#              my $ht_ref = $hsitdata{$isitname};
                my %capref = (type => 4,                      # sampled capture = 1, pure capture = 4
                              state => 0,                     # track between capture records
                              objid => "",                    # object id
@@ -1364,6 +1374,7 @@ for(;;)
                              table => "",                    # related table
                              filtered => 0,                  # number of rows filtered
                              sent => 0,                      # number of rows sent
+                             time_send => 0,                 # time send to TEMS starts
                );
                $thrun{$logthread} = \%capref;
                $cap_ref =  $thrun{$logthread};
@@ -1373,23 +1384,25 @@ for(;;)
          }
       } elsif ($logentry eq "FLT1_BeginSample") {
          $oneline =~ /^\((\S+)\)(.+)$/;
-         $rest = $2;                       # Exit: 0x0
-         if (substr($rest,1,5) eq "Exit:") {
-            my $cap_ref = $thrun{$logthread};
-            if (defined $cap_ref) {
-               if ($cap_ref->{type} == 1) {
-                  $iobjid = $cap_ref->{objid};
-                  $sitref = $sitrun{$iobjid};
-                  if (defined $sitref) {
-                     if ($sitref->{state} == 2) {
-                        $sitref->{time_sample} = $logtime;
+         $rest = $2;                       # Exit: 0x0 or Entry
+         my $cap_ref = $thrun{$logthread};
+         if (defined $cap_ref) {
+            if ($cap_ref->{type} == 1) {
+               $iobjid = $cap_ref->{objid};
+               $sitref = $sitrun{$iobjid};
+               if (defined $sitref) {
+                  if ($sitref->{state} == 2) {
+                     if (substr($rest,1,5) eq "Entry") {
+                        $sitref->{time_sample} = $logtime if $sitref->{time_sample} == 0;
+                     } elsif (substr($rest,1,5) eq "Exit:") {
+                        $sitref->{time_sample_exit} = $logtime;
                      }
                   }
                }
-           }
-        }
-     }
-      next;
+            }
+         }
+         next;
+      }
    }
 
    # capture pure situation sitname before sendDataProxy
@@ -1404,6 +1417,7 @@ for(;;)
             if ($cap_ref->{type} == 4) {
                $rest =~ /sitname="(\S+)"/;
                $isitname = $1;
+               $DB::single=2 if $opt_tsit eq $isitname;
                my $ht_ref = $hsitdata{$isitname};
                if (defined $ht_ref) {
                   if ($ht_ref->{type} == 4) {
@@ -1426,38 +1440,43 @@ for(;;)
             $rest =~ / Sending (\d+) rows for (.*?), <(.*?)>/;
             $srows = $1;
             $iobjid = $3;
-            $sitref = $sitrun{$iobjid};
-            if (defined $sitref) {
-               if ($sitref->{sitname} eq "HEARTBEAT") {
-                  $sitref->{sendct} += 1;
-                  $sitref->{sendrows} += 1;
-                  $sitref->{colrows} += 1;
-                  $sitref->{colfilt} += 1;
-               }
-               if ($sitref->{state} == 3) {
-                  $sitref->{state} = 4;
-                  $sitref->{sendrows} += $srows;
-                  $sitref->{sendct} += 1;
-                  $sitref->{time_send} = $logtime;
-                  $sitref->{time_sample} = $logtime if $sitref->{time_sample} == 0;
-                  delete $thrun{$logthread};
-               }
-               if (defined $sit_details{$sitref->{sitname}}) {
-                  my $slot = getstamp($sitref->{exptime});
-                  my $slot_ref = $sitref->{slots}{$slot};
-                  $slot_ref->{sendrows} += $srows;
-                  $slot_ref->{sendct} += 1;
+            my $cap_ref = $thrun{$logthread};
+            if (defined $cap_ref) {
+               $cap_ref->{time_send} = $logtime;
+               $cap_ref->{sent} = $srows if $cap_ref->{sent} == 0;
+               $isitname = $cap_ref->{sitname};
+               $sitref = $sitrun{$iobjid};
+               if (defined $sitref) {
+                  if ($sitref->{sitname} eq "HEARTBEAT") {
+                     $sitref->{colrows} += 1;
+                     $sitref->{colfilt} += 1;
+                  }
+                  if ($sitref->{state} == 3) {
+                     $sitref->{state} = 4;
+                     $sitref->{sendrows} += $srows;
+                     $sitref->{sendct} += 1;
+                     $sitref->{time_send} = $logtime;
+                  }
+                  if (defined $sit_details{$sitref->{sitname}}) {
+                     my $slot = getstamp($sitref->{exptime});
+                     my $slot_ref = $sitref->{slots}{$slot};
+                     $slot_ref->{sendrows} += $srows;
+                     $slot_ref->{sendct} += 1;
+                  }
                }
             }
             next;
 
             # at exit, collect any pure situation capture and accumulate to pure sit hash
             # (54931626.0DBD-11:kraadspt.cpp,955,"sendDataToProxy") Exit
-         }  elsif (substr($rest,1,7) eq "Exit") {
+         }  elsif (substr($rest,1,4) eq "Exit") {
             my $cap_ref = $thrun{$logthread};
             if (defined $cap_ref) {
+               $isitname = $cap_ref->{sitname};
+               $DB::single=2 if $opt_tsit eq $isitname;
+               $iobjid = $cap_ref->{objid};
+               $sitref = $sitrun{$iobjid};
                if ($cap_ref->{type} == 4) {            # pure situation
-                  $isitname = $cap_ref->{sitname};
                   my $pure_ref = $sitpure{$isitname};
                   if (!defined $pure_ref) {
                      my %pureref = (
@@ -1481,9 +1500,29 @@ for(;;)
                      $pure_end = $logtime;
                   }
                } else {                                # sampled situation
-                  $iobjid = $cap_ref->{objid};
-                  $sitref = $sitrun{$iobjid};
-                  $sitref->{state} = 2 if defined $sitref;   # resume waiting for next expiry
+                  if ($sitref->{state} == 4) {
+                     $sitref->{time_send_exit} = $logtime; # record sendDataToProxy end time
+                     $flowkey = "T" . $cap_ref->{time_send};
+                     $flow_ref = $flowtems{$flowkey};
+                     if (!defined $flow_ref) {
+                        my %flowref = (
+                                         count => 0,
+                                         instances =>[],
+                                      );
+                        $flow_ref = \%flowref;
+                        $flowtems{$flowkey} = \%flowref;
+                     }
+                     $flow_ref->{count} += 1;
+                     my %flowcase = (
+                                       time_send => $cap_ref->{time_send},
+                                       time_send_exit => $logtime,
+                                       sendrows => $cap_ref->{sent},
+                                       table => $sitref->{table},
+                                       sitname => $sitref->{sitname},
+                                    );
+                     push (@{$flow_ref->{instances}},\%flowcase);
+                     $sitref->{state} = 2;             # resume waiting for next expiry
+                  }
                }
             }
          }
@@ -1498,6 +1537,7 @@ for(;;)
          next if substr($rest,1,9) ne "Situation";
          $rest =~ / Situation (\S+) <(.*?)> .*? will next expire at (\d+) .*? timeTaken = (\d+)/;
          $isitname = $1;
+         $DB::single=2 if $opt_tsit eq $isitname;
          $iobjid = $2;
          $inext = $3;
          $itaken = $4;
@@ -1506,6 +1546,8 @@ for(;;)
          if (defined $sitref) {
             $sitref->{state} = 2;                     # waiting for next DriveDataCollection
             $sitref->{coltime} += $itaken;            # time in data collection
+            $DB::single=2 if $opt_tsit eq $isitname;
+            $sitref->{sendtime} += $sitref->{time_send_exit} - $sitref->{time_send};       # time in sendDataToProxy
             $sitref->{time_next} = $sitref->{time_expired} if $sitref->{time_next} == 0;
             $sitref->{delayeval} += $sitref->{time_expired} - $sitref->{time_next};
             $sitref->{delaysample} += $sitref->{time_sample} - $sitref->{time_expired} if $sitref->{time_sample} > 0;
@@ -1514,6 +1556,7 @@ for(;;)
                my $slot = getstamp($sitref->{exptime});
                my $slot_ref = $sitref->{slots}{$slot};
                $slot_ref->{coltime} += $itaken;
+               $slot_ref->{sendtime} += $sitref->{sendtime};
                $slot_ref->{delayeval} += $sitref->{time_expired} - $sitref->{time_next};
                $slot_ref->{delaysample} += $sitref->{time_sample} - $sitref->{time_expired} if $sitref->{time_sample} > 0;
                $slot_ref->{delaysend} += $sitref->{time_send} - $sitref->{time_expired} if $sitref->{time_send} > 0;
@@ -1522,6 +1565,7 @@ for(;;)
             $sitref->{time_expired} = 0;
             $sitref->{time_sample} = 0;
             $sitref->{time_send} = 0;
+            $sitref->{time_sendtime} = 0;
          }
          delete $thrun{$logthread} if defined $thrun{$logthread};
          next;
@@ -1642,6 +1686,7 @@ my @sittab_sit  = ();
 my @sittab_tab  = ();
 my @sittab_instance  = ();
 my @sittab_sendrows  = ();
+my @sittab_sendtime = ();
 my @sittab_colct  = ();
 my @sittab_colrows  = ();
 my @sittab_colbytes  = ();
@@ -1676,6 +1721,7 @@ foreach my $f (keys %sitrun) {
       $sittab_tab[$kx] = $sitref->{table};
       $sittab_instance[$kx] = 0;
       $sittab_sendrows[$kx] = 0;
+      $sittab_sendtime[$kx] = 0;
       $sittab_colct[$kx] = 0;
       $sittab_colrows[$kx] = 0;
       $sittab_colbytes[$kx] = 0;
@@ -1689,6 +1735,7 @@ foreach my $f (keys %sitrun) {
    }
    $sittab_instance[$kx] += 1;
    $sittab_sendrows[$kx] += $sitref->{sendrows};
+   $sittab_sendtime[$kx] += $sitref->{sendtime};
    $sittab_colct[$kx] += $sitref->{colcount};
    $sittab_colrows[$kx] += $sitref->{colrows};
    $sittab_colfilt[$kx] += $sitref->{colfilt};
@@ -1741,19 +1788,10 @@ for (my $i=0;$i<=$sittabi;$i++) {
 
 # calculate totals
 
-my $sitnamect = keys %sitnamex;
 for (my $i=0;$i<=$sittabi;$i++) {
    $sittab_total_coltime += $sittab_coltime[$i];
    $sittab_total_colrows += $sittab_colrows[$i];
    $sittab_total_colbytes += $sittab_colbytes[$i];
-   my $onesit = $sittab_sit[$i];
-   next if $onesit eq "HEARTBEAT";
-   next if substr($onesit,0,3) eq "_Z_";
-   if ($sitnamect > 0) {
-      if (!defined $sitnamex{$onesit}) {
-         $advisori++;$advisor[$advisori] = "Advisory: Situation[$onesit] absent from situation list";
-      }
-   }
 }
 
 my $sittab_cum_coltime = 0;
@@ -1795,7 +1833,7 @@ if ($pure_ct > 0 ) {
 $cnt++;$oline[$cnt]="\n";
 $cnt++;$oline[$cnt]="Agent Workload Audit Report by Sampled Situation and Table sorted by Collection Time\n";
 $cnt++;$oline[$cnt]="\n";
-$cnt++;$oline[$cnt]="Situation,Table,Time_Taken,TT%,TT%cum,Instance,Collections,Sendrows,Collect_Rows,Collect_Filter,Collect_Bytes,Row_Size,Delay_Eval,DelaySample,Delay_Send\n";
+$cnt++;$oline[$cnt]="Situation,Table,Time_Taken,TT%,TT%cum,Instance,Collections,Sendrows,Sendtime,Collect_Rows,Collect_Filter,Collect_Bytes,Row_Size,Delay_Eval,DelaySample,Delay_Send,Taken_Per_Collection\n";
 foreach my $f ( sort { $sittab_coltime[$sittabx{$b}] <=> $sittab_coltime[$sittabx{$a}] or
                        $a cmp $b
                      } keys %sittabx ) {
@@ -1816,6 +1854,7 @@ foreach my $f ( sort { $sittab_coltime[$sittabx{$b}] <=> $sittab_coltime[$sittab
    $outl .= $sittab_instance[$i] . ",";
    $outl .= $sittab_colct[$i] . ",";
    $outl .= $sittab_sendrows[$i] . ",";
+   $outl .= $sittab_sendtime[$i] . ",";
    $outl .= $sittab_colrows[$i] . ",";
    $outl .= $sittab_colfilt[$i] . ",";
    $outl .= $sittab_colbytes[$i] . ",";
@@ -1823,6 +1862,9 @@ foreach my $f ( sort { $sittab_coltime[$sittabx{$b}] <=> $sittab_coltime[$sittab
    $outl .= $sittab_delayeval[$i] . ",";
    $outl .= $sittab_delaysample[$i] . ",";
    $outl .= $sittab_delaysend[$i] . ",";
+   $res_pc = int(($sittab_coltime[$i])/$sittab_colct[$i]) if $sittab_colct[$i] > 0;
+   $ppc = sprintf '%.0f', $res_pc;
+   $outl .= $ppc . ",";
    $outl .= $sittab_objid[$i] . "," if $opt_objid == 1;
    $cnt++;$oline[$cnt]="$outl\n";
 }
@@ -1838,7 +1880,7 @@ my $sittab_cum_colbytes = 0;
 $cnt++;$oline[$cnt]="\n";
 $cnt++;$oline[$cnt]="Agent Workload Audit Report by Situation and Table Sorted by Collected Bytes\n";
 $cnt++;$oline[$cnt]="\n";
-$cnt++;$oline[$cnt]="Situation,Table,Time_Taken,Instance,Collections,Sendrows,Collect_Rows,Collect_Filter,Collect_Bytes,CB%,CB%cum,Row_Size,Delay_Eval,DelaySample,Delay_Send\n";
+$cnt++;$oline[$cnt]="Situation,Table,Time_Taken,Instance,Collections,Sendrows,SendTime,Collect_Rows,Collect_Filter,Collect_Bytes,CB%,CB%cum,Row_Size,Delay_Eval,DelaySample,Delay_Send\n";
 foreach my $f ( sort { $sittab_colbytes[$sittabx{$b}] <=> $sittab_colbytes[$sittabx{$a}] or
                        $a cmp $b
                      } keys %sittabx ) {
@@ -1850,6 +1892,7 @@ foreach my $f ( sort { $sittab_colbytes[$sittabx{$b}] <=> $sittab_colbytes[$sitt
    $outl .= $sittab_instance[$i] . ",";
    $outl .= $sittab_colct[$i] . ",";
    $outl .= $sittab_sendrows[$i] . ",";
+   $outl .= $sittab_sendtime[$i] . ",";
    $outl .= $sittab_colrows[$i] . ",";
    $outl .= $sittab_colfilt[$i] . ",";
    $outl .= $sittab_colbytes[$i] . ",";
@@ -1879,7 +1922,7 @@ foreach my $f (keys %sitrun) {
    $cnt++;$oline[$cnt]="Agent Workload Audit Detail Report for Situation $sitref->{sitname} Table $sitref->{table} ObjectId $f\n";
    my $prowsize = $htabsum{$sitref->{table}};
    $prowsize = 0 if !defined $prowsize;
-   $cnt++;$oline[$cnt]="Slot_Time,Time_Taken,Collections,Send_count,Sendrows,Collect_Rows,Collect_Filter,Collect_Bytes,Row_Size,Delay_Eval,DelaySample,Delay_Send\n";
+   $cnt++;$oline[$cnt]="Slot_Time,Time_Taken,Collections,Send_count,Sendrows,SendTime,Collect_Rows,Collect_Filter,Collect_Bytes,Row_Size,Delay_Eval,DelaySample,Delay_Send\n";
    foreach my $s ( sort { $a <=> $b} keys %{$sitref->{slots}}) {
       my $slot_ref = $sitref->{slots}{$s};
       my $outl = $s . ",";
@@ -1887,6 +1930,7 @@ foreach my $f (keys %sitrun) {
       $outl .= $slot_ref->{colcount} . ",";
       $outl .= $slot_ref->{sendct} . ",";
       $outl .= $slot_ref->{sendrows} . ",";
+      $outl .= $slot_ref->{sendtime} . ",";
       $outl .= $slot_ref->{colrows} . ",";
       $outl .= $slot_ref->{colfilt} . ",";
       my $cb = $slot_ref->{colrows} * $prowsize;
@@ -1899,15 +1943,68 @@ foreach my $f (keys %sitrun) {
    }
 }
 
+#flow report process
+foreach my $f (keys %flowtems) {
+   $flow_ref = $flowtems{$f};
+   my $fcount = $flow_ref->{count};
+   for (my $i=0;$i<$flow_ref->{count};$i++){
+      my $fcase_ref = $flow_ref->{instances}[$i];
+      my $itime_send = $fcase_ref->{time_send};
+      my $itime_send_exit = $fcase_ref->{time_send_exit};
+      my $isendrows = $fcase_ref->{sendrows};
+      my $itable = $fcase_ref->{table};
+      my $isitname = $fcase_ref->{sitname};
+      my $irowsize = $htabsize{$itable};
+      $irowsize = 0 if !defined $irowsize;
+      my $ibytes = $isendrows*$irowsize;
+      my $ibyte_rate = int($ibytes/($itime_send_exit-$itime_send+1));
+      for (my $j=$itime_send;$j<=$itime_send_exit;$j++) {
+          my $rate_ref = $flowrate{$j};
+          if (!defined $rate_ref) {
+             my %rateref = (
+                              bytes => 0,
+                              count => 0,
+                              sitnames => {},
+                              tables => {},
+                           );
+             $rate_ref = \%rateref;
+             $flowrate{$j} = \%rateref;
+          }
+          $rate_ref->{count} += 1;
+          $rate_ref->{bytes} += $ibyte_rate;
+          $rate_ref->{sitnames}{$isitname} += $ibyte_rate;
+          $rate_ref->{tables}{$itable} += $ibyte_rate;
+      }
+   }
+}
+
+$cnt++;$oline[$cnt] = "\n";
+$cnt++;$oline[$cnt] = "Agent to TEMS flow report\n";
+$cnt++;$oline[$cnt] = "Time,Bytes,Rate,\n";
+foreach my $f ( sort { $a <=> $b} keys %flowrate) {
+   my $rate_ref = $flowrate{$f};
+   $outl = getstamp($f) . ",";
+   $outl .= $rate_ref->{bytes} . ",";
+   $outl .= $rate_ref->{count} . ",";
+   my $psits = "";
+   foreach my $g (keys %{$rate_ref->{sitnames}}) {
+      $psits .= $g . "=" . $rate_ref->{sitnames}{$g} . ":";
+   }
+   $outl .= $psits . ",";
+   $cnt++;$oline[$cnt]="$outl\n";
+}
+
+
 #print "\n";
 #print "Agent Workload Audit with Object ID\n";
-#print "Situation,Table,Instance,sendrows,collections,collect_rows,collect_filter,collect_time,\n";
+#print "Situation,Table,Instance,sendrows,SendTime,collections,collect_rows,collect_filter,collect_time,\n";
 #for (my $i=0;$i<=$sittabi;$i++) {
 #   my $oline = $sittab_objid[$i] . ",";
 #   $oline .= $sittab_sit[$i] . ",";
 #   $oline .= $sittab_tab[$i] . ",";
 #   $oline .= $sittab_instance[$i] . ",";
 #   $oline .= $sittab_sendrows[$i] . ",";
+#   $oline .= $sittab_sendtime[$i] . ",";
 #   $oline .= $sittab_colct[$i] . ",";
 #   $oline .= $sittab_colrows[$i] . ",";
 #   $oline .= $sittab_colfilt[$i] . ",";
@@ -2110,55 +2207,6 @@ print STDERR "Wrote $cnt lines\n";
 
 exit 0;
 
-sub init_txt {
-   my @ksit_data;
-   my $isitname;
-   my $ipdt;
-
-   # (5) the TSITDESC data
-   open(KSIT, "< $opt_txt_tsitdesc") || die("Could not open sit $opt_txt_tsitdesc\n");
-   @ksit_data = <KSIT>;
-   close(KSIT);
-
-   $ll = 0;
-   foreach $oneline (@ksit_data) {
-      $ll += 1;
-      next if $ll < 5;
-      chop $oneline;
-      $isitname = substr($oneline,0,32);
-      $isitname =~ s/\s+$//;   #trim trailing whitespace
-      $ipdt = substr($oneline,33);
-      $ipdt =~ s/\s+$//;   #trim trailing whitespace
-      $sitnamex{$isitname} = $ipdt;
-   }
-   close KSIT;
-
-}
-
-sub init_lst {
-   my @ksit_data;                 # TSITDESC - Situation Description
-   my $isitname;
-   my $ipdt;
-
-   # (5) the TSITDESC data
-   # [1]  Deploy_Failed  *NO  ATOM=KDYDYST.TARGETMSN;SEV=Critical;TFWD=Y;OV=N;~  *NONE  NNN  0  000200  *IF *VALUE Deploy_status.Status *EQ Failed
-   open(KSIT, "< $opt_lst_tsitdesc") || die("Could not open sit $opt_lst_tsitdesc\n");
-   @ksit_data = <KSIT>;
-   close(KSIT);
-
-   $ll = 0;
-   foreach $oneline (@ksit_data) {
-      $ll += 1;
-      next if $ll < 2;
-      chop $oneline;
-      ($isitname,$ipdt) = parse_lst(2,$oneline);
-      $isitname =~ s/\s+$//;   #trim trailing whitespace
-      $ipdt =~ s/\s+$//;   #trim trailing whitespace
-   }
-   $sitnamex{$isitname} = $ipdt;
-}
-
-
 sub open_kib {
    # get list of files
    $logpat = $logbase . '-.*\.log' if defined $logbase;
@@ -2262,6 +2310,7 @@ my %stampx;
 
 sub getstamp {
    my $epoch = shift;
+   my $hist_sec;
    my $hist_min;
    my $hist_hour;
    my $hist_day;
@@ -2269,15 +2318,16 @@ sub getstamp {
    my $hist_year;
    my $stampr = $stampx{$epoch};
    if (!defined $stampr) {
+      $hist_sec = (localtime($epoch))[0];
+      $hist_sec = '00' . $hist_sec;
       $hist_min = (localtime($epoch))[1];
-      $hist_min = int($hist_min/$opt_slot) * $opt_slot;
       $hist_min = '00' . $hist_min;
       $hist_hour = '00' . (localtime($epoch))[2];
       $hist_day  = '00' . (localtime($epoch))[3];
       $hist_month = (localtime($epoch))[4] + 1;
       $hist_month = '00' . $hist_month;
       $hist_year =  (localtime($epoch))[5] + 1900;
-      $stampr = substr($hist_year,-2,2) . substr($hist_month,-2,2) . substr($hist_day,-2,2) .  substr($hist_hour,-2,2) .  substr($hist_min,-2,2);
+      $stampr = substr($hist_year,-2,2) . substr($hist_month,-2,2) . substr($hist_day,-2,2) .  substr($hist_hour,-2,2) .  substr($hist_min,-2,2) . substr($hist_sec,-2,2);
       $stampx{$epoch} = $stampr;
    }
    return $stampr;
@@ -2332,3 +2382,5 @@ exit;
 # 0.82000 - Add two rare KPX tables and KNT.NTMNTPT
 #         - Correct pure event situation calculation
 # 0.83000 - Add situation detail report over time
+# 0.84000 - Report on sendDataToProxy time
+#         - report on Flow to TEMS averaged by second
