@@ -17,7 +17,7 @@
 #
 # $DB::single=2;   # remember debug breakpoint
 
-$gVersion = 0.86000;
+$gVersion = 0.87000;
 $gWin = (-e "C:/") ? 1 : 0;       # determine Windows versus Linux/Unix for detail settings
 
 ## Todos
@@ -499,6 +499,8 @@ my %commenvx = (
                  'CTIRA_HEARTBEAT' => 1,
               );
 
+my %porterrx;
+
 my $rptkey;
 
 
@@ -553,6 +555,7 @@ my $advisori = -1;
 my @advisor = ();
 my %timelinex;
 my $timeline_start;
+my %timelinexx;
 my %envx;
 my %rpcrunx;
 my @dlogfiles;
@@ -578,6 +581,7 @@ my $opt_allports = 1;
 my $opt_pc;
 my $opt_allenv;                              # when 1 dump all environment variables
 my $opt_allinv;                              # when 1 dump all environment variables
+my $opt_merge;
 
 my $arg_start = join(" ",@ARGV);
 $hdri++;$hdr[$hdri] = "Runtime parameters: $arg_start";
@@ -667,8 +671,10 @@ if (!defined $opt_slot) {$opt_slot = 60;}
 if (!defined $opt_v) {$opt_v = 0;}
 if (!defined $opt_allenv) {$opt_allenv = 0;}
 if (!defined $opt_allinv) {$opt_allinv = 0;}
+if (!defined $opt_allinv) {$opt_allinv = 0;}
 if (!defined $opt_vv) {$opt_vv = 0;}
 if (!defined $opt_pc) {$opt_pc = "";}
+$opt_merge = $opt_allinv;
 
 open( ZOP, ">$opt_zop" ) or die "Cannot open zop file $opt_zop : $!" if $opt_zop ne "";
 
@@ -712,11 +718,15 @@ my $key;
 
 
 if ($logfn eq "") {
+$DB::single=2;
    $pattern = "_ms(_kdsmain)?\.inv";
-   $pattern = "_" . $opt_pc . "_k" . $opt_pc . "agent\.inv" if $opt_pc ne "";
+#   $pattern = "_" . $opt_pc . "_k" . $opt_pc . "agent\.inv" if $opt_pc ne "";
+   $pattern = "_k" . $opt_pc . "agent\.inv" if $opt_pc ne "";
+   $pattern = "_" . $opt_pc . "_k" . $opt_pc . "cma\.inv" if $opt_pc eq "nt";
    @results = ();
    opendir(DIR,$opt_logpath) || die("cannot opendir $opt_logpath: $!\n"); # get list of files
    @results = grep {/$pattern/} readdir(DIR);
+$DB::single=2;
    closedir(DIR);
    die "No _*.inv found\n" if $#results == -1;
    $logfn =  $results[0];
@@ -776,6 +786,22 @@ foreach my $log (keys %logbasex) {
    $logbase = $log;
    do_rpt;
 my $x = 1;
+}
+
+if ($opt_merge == 1) {
+   my $mfn = "merge.csv";
+   open MH, ">$mfn" or die "can't open $mfn: $!";
+   foreach $f ( sort { $a cmp $b} keys %timelinexx) {
+      my $ml_ref = $timelinexx{$f};
+      $outl = sec2ltime($ml_ref->{time}+$local_diff) . ",";
+      $outl .= $ml_ref->{hextime} . ",";
+      $outl .= $ml_ref->{l} . ",";
+      $outl .= $ml_ref->{advisory} . ",";
+      $outl .= $ml_ref->{notes} . ",";
+      $outl .= $ml_ref->{logbase} . ",";
+      print MH "$outl\n";
+   }
+   close MH;
 }
 
 exit 0;
@@ -1348,12 +1374,19 @@ sub do_rpt {
          if ($logentry eq "ConnectToProxy") {
             $oneline =~ /^\((\S+)\)(.+)$/;
             $rest = $2; # Successfully connected to CMS REMOTE_usrdrtm041ccpr2 using ip.spipe:#146.89.140.75[3660]
-            next if substr($rest,1,22) ne "Successfully connected";
-            $rest =~ /to CMS (\S+) using (\S+)/;
-            my $items = $1;
-            my $iconn = $2;
-            set_timeline($logtime,$l,$logtimehex,1,"Communications",substr($rest,1));
-            next;
+            if (substr($rest,1,22) eq "Successfully connected") {
+               $rest =~ /to CMS (\S+) using (\S+)/;
+               my $items = $1;
+               my $iconn = $2;
+               set_timeline($logtime,$l,$logtimehex,1,"Communications",substr($rest,1));
+               $iconn =~ /\[(\d+)\]/;
+               $iport = $1;
+               if (defined $iport) {
+                  my $m = $l . "a";
+                  set_timeline($logtime,$m,$logtimehex,4,"Communications",$iport);  # record TEMS port
+               }
+               next;
+            }
          }
          if ($logentry eq "PrimaryTEMSperiodicLookupThread") {
             $oneline =~ /^\((\S+)\)(.+)$/;
@@ -1404,6 +1437,8 @@ sub do_rpt {
       }
       #(5AA2E3F1.0000-13E0:kdcc1sr.c,642,"rpc__sar") Endpoint unresponsive: "ip.spipe:#146.89.140.75:3660", 1C010001:1DE0000F, 210, 5(2), FFFF/1, D140831.1:1.1.1.13, tms_ctbs623fp3:d3086a
       #(5AA2E31C.0000-7E4:kdcc1sr.c,642,"rpc__sar") Remote call failure: 1C010001
+      #(5AB93569.0000-14C8:kdcc1sr.c,670,"rpc__sar") Connection lost: "ip.spipe:#146.89.140.75:65100", 1C010001:1DE0004D, 30, 100(5), FFFF/40, D140831.1:1.1.1.13, tms_ctbs630fp7:d6305a
+
       if (substr($logunit,0,9) eq "kdcc1sr.c") {
          if ($logentry eq "rpc__sar") {
             $oneline =~ /^\((\S+)\)(.+)$/;
@@ -2469,14 +2504,16 @@ sub do_rpt {
    }
 
    # Communication activity timeline
-   my $timeline_ct = scalar keys %timelinex;
-   if ($timeline_ct > 0) {
       $rptkey = "AGENTREPORT010";$advrptx{$rptkey} = 1;         # record report key
-      my $state = 1;                                           # waiting for TEMS connection
+      my $nstate = 1;                                           # waiting for TEMS connection
                                                                # 2 waiting for errors
       my $tems_last = "";
       my $tems_ip = "";
+      my $tems_port = "";
       my $tems_time = 0;
+      my $temsfail = 0;
+      my $temsfail_ct = 0;
+      my $temsfail_sec = 0;
       my $commfail_ct = 0;
       my $commfail_sec = 0;
       $cnt++;$oline[$cnt]="\n";
@@ -2484,7 +2521,7 @@ sub do_rpt {
       $cnt++;$oline[$cnt]="LocalTime,Hextime,Line,Advisory/Report,Notes,\n";
       foreach $f ( sort { $a cmp $b} keys %timelinex) {
          my $tl_ref = $timelinex{$f};
-         if ($state == 1) {
+         if ($nstate == 1) {
             if ($tl_ref->{badcom} == 1) {   # connected to CMS
                $tl_ref->{notes} =~ /Successfully connected to CMS (\S+) using (\S+)/;
                $tems_last = $1;
@@ -2505,10 +2542,22 @@ sub do_rpt {
                $commfail_ct = 0;
                $commfail_sec = 0;
                $cnt++;$oline[$cnt]="$outl\n";
-               $state = 2;
+               $nstate = 2;
             } elsif ($tl_ref->{badcom} == 2) {
-               $commfail_ct += 1;
-               $commfail_sec = $tl_ref->{time} if $commfail_sec == 0;
+               my $temsfail = 0;
+               if ($tems_port ne "") {
+                  $temsfail = 1 if index($tl_ref->{notes},$tems_port) != -1;
+               }
+               if ($temsfail == 0) {
+                  $tl_ref->{notes} =~ /\#.*?\:(\d+)\"/;
+                  $iport = $1;
+                  $porterrx{$iport} += 1 if defined $iport;
+                  $commfail_ct += 1;
+                  $commfail_sec = $tl_ref->{time} if $commfail_sec == 0;
+               } else {
+                  $temsfail_ct += 1;
+                  $temsfail_sec = $tl_ref->{time} if $temsfail_sec == 0;
+               }
             } elsif ($tl_ref->{badcom} == 3) { #end of log
                $outl = sec2ltime($tl_ref->{time}+$local_diff) . ",";
                $tems_time = $tl_ref->{time};
@@ -2518,13 +2567,17 @@ sub do_rpt {
                $pdiff = $pdays . "/" . strftime("\%H:\%M:\%S",gmtime($psecs));
                $outl .= "Ended with no connection to TEMS after $commfail_ct errors recorded over $pdiff,";
                $cnt++;$oline[$cnt]="$outl\n";
+            } elsif ($tl_ref->{badcom} == 4) { #TEMS port defined
+               $tems_port = $tl_ref->{notes};
             } elsif ($tl_ref->{badcom} == -1) { # start of log
                $outl = sec2ltime($tl_ref->{time}+$local_diff) . ",Log,Start";
                $cnt++;$oline[$cnt]="$outl\n";
             }
 
-         } elsif ($state == 2) {
-            if ($tl_ref->{badcom} == 1) {   # connected to CMS - again!
+         } elsif ($nstate == 2) {
+            if ($tl_ref->{badcom} == 4) { #TEMS port defined
+               $tems_port = $tl_ref->{notes};
+            } elsif ($tl_ref->{badcom} == 1) {   # connected to CMS - again!
                $outl = sec2ltime($tl_ref->{time}+$local_diff) . ",";
                $outl .= $tems_last . ",";
                $outl .= $tems_ip . ",";
@@ -2544,16 +2597,27 @@ sub do_rpt {
                $outl .= "Connecting to TEMS,";
                $cnt++;$oline[$cnt]="$outl\n";
             } elsif ($tl_ref->{badcom} == 2) { # communications failure
-               $tdiff = $tl_ref->{time} - $tems_time;
-               my $psecs = $tdiff%86400;
-               my $pdays = int($tdiff/86400);
-               $pdiff = $pdays . "/" . strftime("\%H:\%M:\%S",gmtime($psecs));
-               $outl = sec2ltime($tl_ref->{time}+$local_diff) . ",";
-               $outl .= "Communications failure after $pdiff,";
-               $cnt++;$oline[$cnt]="$outl\n";
-               $commfail_ct = 1;
-               $commfail_sec = $tl_ref->{time};
-               $state = 1;
+               if ($tems_port ne "") {
+                  if (index($tl_ref->{notes},$tems_port) != -1) {  # communications failure on TEMS port
+                     $tdiff = $tl_ref->{time} - $tems_time;
+                     my $psecs = $tdiff%86400;
+                     my $pdays = int($tdiff/86400);
+                     $pdiff = $pdays . "/" . strftime("\%H:\%M:\%S",gmtime($psecs));
+                     $outl = sec2ltime($tl_ref->{time}+$local_diff) . ",";
+                     $outl .= "Communications failure after $pdiff,";
+                     $cnt++;$oline[$cnt]="$outl\n";
+                     $temsfail_ct = 1;
+                     $temsfail_sec = $tl_ref->{time};
+                     $tems_port = "";
+                     $nstate = 1;
+                  } else {
+                     $tl_ref->{notes} =~ /\#.*?\:(\d+)\"/;
+                     $iport = $1;
+                     $porterrx{$iport} += 1 if defined $iport;
+                     $commfail_ct = 1;
+                     $commfail_sec = $tl_ref->{time};
+                  }
+               }
             } elsif ($tl_ref->{badcom} == 3) { # end of log
                $outl = sec2ltime($tl_ref->{time}+$local_diff) . ",";
                $outl .= $tems_last . ",";
@@ -2563,6 +2627,16 @@ sub do_rpt {
                my $pdays = int($tdiff/86400);
                $pdiff = $pdays . "/" . strftime("\%H:\%M:\%S",gmtime($psecs));
                $outl .= "Log ended with connection to TEMS $tems_last after $pdiff,";
+               my $porterr_ct = scalar keys %porterrx;
+               if ($porterr_ct > 0) {
+                  $pporterr = "non-TEMS port errors:";
+                  foreach my $p (keys %porterrx) {
+                     $pporterr .= $p . "[" . $porterrx{$p} . "] ";
+                  }
+                 chop $pporterr;
+                 $pporterr .= ",";
+               }
+               $outl .= $pporterr if defined $pporterr;
                $cnt++;$oline[$cnt]="$outl\n";
             } elsif ($tl_ref->{badcom} == -1) { # Start of log
                $outl = sec2ltime($tl_ref->{time}+$local_diff) . ",Log,Start";
@@ -2590,7 +2664,21 @@ sub do_rpt {
          $outl .= $tl_ref->{advisory} . ",";
          $outl .= $tl_ref->{notes} . ",";
          $cnt++;$oline[$cnt]="$outl\n";
-      }
+
+         my $mkey = sec2ltime($tl_ref->{time}+$local_diff) . "|" . $tl_ref->{l};
+         my $ml_ref = $timelinexx{$mkey};
+         if (!defined $ml_ref) {
+            my %mlref = (   time => $tl_ref->{time},
+                            hextime => $tl_ref->{hextime},
+                            l => $tl_ref->{l},
+                            advisory => $tl_ref->{advisory},
+                            notes => $tl_ref->{notes},
+                            logbase => $logbase,
+                        );
+
+            $ml_ref = \%mlref;
+            $timelinexx{$mkey} = \%mlref;
+         }
    }
 
    $cnt++;$oline[$cnt]="\n";
@@ -2867,6 +2955,9 @@ sub do_rpt {
          }
       }
    }
+   if ($opt_pc ne "") {
+      $opt_o = "agentaud_" . $opt_pc . ".csv" if $opt_o eq "agentaud.csv";
+   }
    my $ofn = $opt_o;
    $ofn = $logbase . "_" . $opt_o if $opt_allinv == 1;
 
@@ -3114,3 +3205,6 @@ exit;
 #         - report on Flow to TEMS averaged by second
 # 0.85000 - Correct z/OS diagnostic log logic
 # 0.86000 - Add tracking of communication related issues
+# 0.87000 - track non-TEMS communication errors separately.
+#         - create merge.csv combined summary timeline if -allinv used
+#         - handle alternate .inv name
